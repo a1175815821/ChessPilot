@@ -81,7 +81,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
         }
         root.addView(TextView(this).apply {
-            text = "多邻国国际象棋助手"
+            text = "ChessPilot"
             textSize = 22f
             paint.isFakeBoldText = true
         })
@@ -345,7 +345,7 @@ class MainActivity : Activity() {
         super.onResume()
         // Retry banner setup ONLY while the engine service runs: the banner is
         // owned by the service lifecycle (AssistService creates/releases it).
-        // Unconditional init used to float a stale "象棋助手就绪" banner over
+        // Unconditional init used to float a stale "ChessPilot" banner over
         // everything after merely opening (and leaving) this screen.
         if (EngineLoop.engineState != EngineLoop.STATE_STOPPED) {
             OverlayManager.init(this)

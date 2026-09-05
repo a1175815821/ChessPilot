@@ -12,7 +12,7 @@ object Notify {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(
-                CHANNEL_ID, "ChessAssist", NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "ChessPilot", NotificationManager.IMPORTANCE_LOW
             )
         )
     }

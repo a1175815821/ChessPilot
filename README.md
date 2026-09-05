@@ -1,4 +1,4 @@
-# ChessAI · 多邻国国际象棋助手
+# ChessPilot · 多邻国国际象棋助手
 
 LSPosed Hook + Stockfish 伴侣 App：在多邻国国际象棋里实时分析局面、画箭头、自动走棋。
 

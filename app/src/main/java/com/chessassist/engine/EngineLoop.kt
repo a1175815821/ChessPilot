@@ -449,7 +449,7 @@ object EngineLoop {
                     restarts = 0
                     engineState = STATE_RUNNING
                     note("引擎已启动，等待对局局面…")
-                    OverlayManager.showStatus("象棋助手就绪", "等待对局…")
+                    OverlayManager.showStatus("ChessPilot", "等待对局…")
                 }
                 val (fen, user, turn) = synchronized(pendingLock) {
                     Triple(pendingFen, pendingUserColor, pendingTurnColor)

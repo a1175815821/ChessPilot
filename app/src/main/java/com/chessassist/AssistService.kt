@@ -18,7 +18,7 @@ class AssistService : LifecycleService() {
             this, Notify.CHANNEL_ID
         )
             .setSmallIcon(android.R.drawable.ic_menu_compass)
-            .setContentTitle("象棋助手")
+            .setContentTitle("ChessPilot")
             .setContentText("本地引擎运行中 — 请打开多邻国国际象棋")
             .setOngoing(true)
             .build()

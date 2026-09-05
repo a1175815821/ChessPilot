@@ -90,7 +90,7 @@ object OverlayManager {
                 wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
                 titleTv = TextView(appContext).apply {
-                    text = "象棋助手就绪"
+                    text = "ChessPilot"
                     setTextColor(Color.WHITE)
                     textSize = 17f
                     paint.isFakeBoldText = true
@@ -337,7 +337,7 @@ object OverlayManager {
             // the user's turn) can overwrite; fresh analysis replaces them.
             val cur = titleTv?.text.toString()
             if (cur.startsWith("推荐") || cur.startsWith("自动走棋中") ||
-                cur.startsWith("等待走棋中") || cur.startsWith("象棋助手") ||
+                cur.startsWith("等待走棋中") || cur.startsWith("ChessPilot") ||
                 cur.startsWith("局面停滞")
             ) {
                 titleTv?.text = reason

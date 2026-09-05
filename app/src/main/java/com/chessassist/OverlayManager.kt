@@ -18,7 +18,9 @@ import com.chessassist.engine.ChessMath
 /**
  * Companion-side overlay: persistent dark status banner (top center by default).
  *
- * Layout (horizontal): [spinner | title+winrate column | play button].
+ * Layout (horizontal): [berserk badge? | spinner | title+winrate column | play button].
+ * Berserk mode adds a red border + 狂暴 badge (style only — text prefixes are
+ * never touched, guards depend on them).
  * - Container: dark translucent rounded rect, draggable (position persisted).
  * - Win-rate line recolors live (green/yellow/red).
  * - Play button is the ONLY tap target (banner body never consumes taps):
@@ -43,8 +45,28 @@ object OverlayManager {
     private var detailTv: TextView? = null
     private var playBtn: Button? = null
     private var spinner: SpinView? = null
+    private var modeBadge: TextView? = null
+    private var bgDrawable: GradientDrawable? = null
     private var added = false
     @Volatile private var initScheduled = false
+
+    private val BERSERK_RED = Color.parseColor("#FF5722")
+
+    /**
+     * Mode livery: berserk gets a red border + a 狂暴 badge, normal stays plain
+     * dark. Applied by every writer (mode can flip at runtime via the settings
+     * switch). Title/detail TEXT is never prefixed — clear()'s startsWith
+     * guards and the help-title matching depend on exact prefixes.
+     */
+    private fun applyModeStyle() {
+        val b = try { BridgeSettings.berserk } catch (_: Throwable) { false }
+        modeBadge?.visibility = if (b) View.VISIBLE else View.GONE
+        val root = root ?: return
+        val bg = bgDrawable ?: return
+        val density = try { root.resources.displayMetrics.density } catch (_: Throwable) { 1f }
+        if (b) bg.setStroke((2 * density).toInt(), BERSERK_RED)
+        else bg.setStroke(0, Color.TRANSPARENT)
+    }
 
     private const val PREFS = "chessassist"
     private const val K_OX = "overlay_x"
@@ -97,14 +119,30 @@ object OverlayManager {
                     isEnabled = false
                     setOnClickListener { onPlay?.invoke() }
                 }
+                modeBadge = TextView(appContext).apply {
+                    text = "狂暴"
+                    setTextColor(Color.WHITE)
+                    textSize = 12f
+                    paint.isFakeBoldText = true
+                    background = GradientDrawable().apply {
+                        setColor(BERSERK_RED)
+                        cornerRadius = dp(8).toFloat()
+                    }
+                    setPadding(dp(6), dp(2), dp(6), dp(2))
+                    visibility = View.GONE
+                }
                 root = LinearLayout(appContext).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     background = GradientDrawable().apply {
                         setColor(Color.parseColor("#CC1E1E1E"))
                         cornerRadius = dp(16).toFloat()
-                    }
+                    }.also { bgDrawable = it }
                     setPadding(dp(12), dp(10), dp(12), dp(10))
+                    addView(modeBadge, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { marginEnd = dp(8) })
                     addView(spinner, LinearLayout.LayoutParams(dp(24), dp(24)).apply {
                         marginEnd = dp(8)
                     })
@@ -151,6 +189,7 @@ object OverlayManager {
                 })
                 wm?.addView(root, lp)
                 added = true
+                applyModeStyle()
             } catch (_: Throwable) {
                 // overlay permission missing — allow a later retry (e.g. after the
                 // user grants it and returns to MainActivity, which calls init again).
@@ -235,6 +274,7 @@ object OverlayManager {
     /** Core writer: persistent two-line banner. */
     fun showStatus(title: String, detail: String = "") {
         main.post {
+            applyModeStyle()
             titleTv?.text = title
             detailTv?.text = detail
             detailTv?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
@@ -248,6 +288,7 @@ object OverlayManager {
     fun showThinking(autoplay: Boolean) {
         val title = if (autoplay) "自动走棋中…" else "等待走棋中…"
         main.post {
+            applyModeStyle()
             titleTv?.text = title
             detailTv?.text = "正在计算…"
             detailTv?.visibility = View.VISIBLE
@@ -262,14 +303,20 @@ object OverlayManager {
     fun showBestMove(
         uci: String, fen: String, scoreCp: Int? = null,
         autoplay: Boolean = false, userColor: String? = null,
+        depth: Int = 0,
     ) {
         val stm = fen.split(' ').getOrNull(1)
         val line2 = ChessMath.formatWinRate(scoreCp, stm, userColor)
+        // Depth prefix = engine-health readout (single digits at long think
+        // times mean the engine is throttled/starved — check 狂暴/threads).
+        // Color discipline (B1) untouched: the whole line keeps win-rate color.
+        val detail = if (depth > 0) "深度$depth · $line2" else line2
         val rate = ChessMath.userWinRate01(scoreCp, stm, userColor)
         val title = if (autoplay) "自动走棋中：$uci" else "推荐：$uci"
         main.post {
+            applyModeStyle()
             titleTv?.text = title
-            detailTv?.text = line2
+            detailTv?.text = detail
             detailTv?.visibility = View.VISIBLE
             detailTv?.setTextColor(ChessMath.winRateColor(rate))
             setSpinner(autoplay)
@@ -280,6 +327,7 @@ object OverlayManager {
     /** Opponent's turn (or idle): keep the banner resident, show last conclusion. */
     fun clear(reason: String = "等待对手走棋…", detail: String = "") {
         main.post {
+            applyModeStyle()
             // Don't wipe a fresher state that arrived out of order. "局面停滞" is
             // deliberately replaceable (B2): it is written by the idle annotator,
             // and any live skip means the game moved on. Manual pleas
@@ -368,6 +416,8 @@ object OverlayManager {
             detailTv = null
             playBtn = null
             spinner = null
+            modeBadge = null
+            bgDrawable = null
             added = false
             initScheduled = false
         }

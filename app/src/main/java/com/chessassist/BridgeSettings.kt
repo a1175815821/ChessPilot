@@ -12,6 +12,7 @@ object BridgeSettings {
     private const val K_MOVETIME = "movetime_ms"
     private const val K_DEPTH = "search_depth"
     private const val K_DELAY = "autoplay_delay_ms"
+    private const val K_BERSERK = "berserk"
 
     /** Auto-play Stockfish's move on the real board. Default OFF (ToS/ban risk). */
     @Volatile var autoPlayEnabled: Boolean = false
@@ -32,6 +33,13 @@ object BridgeSettings {
      */
     @Volatile var autoPlayDelayMs: Long = 450L
 
+    /**
+     * Berserk mode: engine runs flat-out (all cores + big hash). Default OFF:
+     * sustained full load heats the phone, and thermal throttling then costs
+     * more Elo than the extra threads gain. For key games / suspected cheaters.
+     */
+    @Volatile var berserk: Boolean = false
+
     fun load(context: Context) {
         try {
             val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -39,6 +47,7 @@ object BridgeSettings {
             movetimeMs = p.getLong(K_MOVETIME, 700L).coerceIn(100L, 3000L)
             searchDepth = p.getInt(K_DEPTH, 0).coerceIn(0, 30)
             autoPlayDelayMs = p.getLong(K_DELAY, 450L).coerceIn(150L, 1500L)
+            berserk = p.getBoolean(K_BERSERK, false)
         } catch (_: Throwable) {
         }
     }
@@ -50,6 +59,7 @@ object BridgeSettings {
                 .putLong(K_MOVETIME, movetimeMs)
                 .putInt(K_DEPTH, searchDepth)
                 .putLong(K_DELAY, autoPlayDelayMs)
+                .putBoolean(K_BERSERK, berserk)
                 .apply()
         } catch (_: Throwable) {
         }
@@ -57,4 +67,23 @@ object BridgeSettings {
 
     fun describe(): String =
         if (searchDepth > 0) "固定深度 $searchDepth 层" else "思考时间 ${movetimeMs}ms"
+
+    fun modeShort(): String = if (berserk) "狂暴" else "普通"
+
+    /**
+     * Engine threads for [cores] logical processors. Normal keeps 2 cores free
+     * for the game/UI/socket so taps never stutter; berserk takes everything
+     * (if taps lag under berserk, drop this to cores-1 — one line).
+     */
+    fun threadsFor(berserk: Boolean, cores: Int): Int =
+        if (berserk) cores.coerceIn(1, 12) else (cores - 2).coerceIn(1, 4)
+
+    /**
+     * Engine hash (MB) for [totalMemMb] device RAM. Normal is safe everywhere;
+     * berserk scales with RAM but never below 128 (too small wastes the mode)
+     * or above 512 (diminishing returns + OOM risk on 4GB phones).
+     */
+    fun hashMbFor(berserk: Boolean, totalMemMb: Long): Int =
+        if (!berserk) 128
+        else minOf(512, maxOf(128, (totalMemMb / 10).toInt()))
 }

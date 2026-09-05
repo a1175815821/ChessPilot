@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var depthBar: SeekBar
     private lateinit var speedLabel: TextView
     private lateinit var speedBar: SeekBar
+    private lateinit var berserkSwitch: Switch
     private lateinit var advancedBox: LinearLayout
     private lateinit var advancedHeader: TextView
     private lateinit var eventsHeader: TextView
@@ -179,6 +180,24 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
+        berserkSwitch = Switch(this).apply {
+            text = "狂暴模式（线程拉满+大内存，关键局用）"
+            textSize = 15f
+            isChecked = BridgeSettings.berserk
+            setOnCheckedChangeListener { _, on ->
+                BridgeSettings.berserk = on
+                BridgeSettings.save(this@MainActivity)
+                // Live-apply: the loop recreates the engine same-generation.
+                EngineLoop.restartEngine(if (on) "狂暴开" else "狂暴关")
+                try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
+            }
+        }
+        advancedBox.addView(berserkSwitch)
+        advancedBox.addView(TextView(this).apply {
+            text = "狂暴满载发热大，降频反而更弱；烫手就关。思考时间共用上面滑杆，建议≥1500ms。"
+            textSize = 12f
+            setTextColor(Color.parseColor("#9E9E9E"))
+        })
         timeLabel = TextView(this).apply { textSize = 14f }
         advancedBox.addView(timeLabel)
         timeBar = SeekBar(this).apply {
@@ -249,6 +268,7 @@ class MainActivity : Activity() {
         statusRows.text = buildString {
             appendLine("Hook：${s.hookLine}")
             appendLine("NNUE：${s.nnue}")
+            appendLine("引擎：${s.engineResLine}")
             appendLine("局面：${s.fen.take(48)}")
             appendLine("思考：${s.settingsLine}　自动：${s.autoLine}")
             append("心跳：${s.heartbeatAgo}")
@@ -332,6 +352,7 @@ class MainActivity : Activity() {
         }
         BridgeSettings.load(this)
         autoSwitch.isChecked = BridgeSettings.autoPlayEnabled
+        berserkSwitch.isChecked = BridgeSettings.berserk
         timeBar.progress = ((BridgeSettings.movetimeMs / 100).toInt() - 1).coerceIn(0, 29)
         depthBar.progress = BridgeSettings.searchDepth.coerceIn(0, 30)
         speedBar.progress = ((BridgeSettings.autoPlayDelayMs - 150) / 50).toInt().coerceIn(0, 27)

@@ -1,7 +1,9 @@
 package com.chessassist.engine
 
+import android.app.ActivityManager
 import android.content.Context
 import android.util.Log
+import com.chessassist.BridgeSettings
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -32,6 +34,14 @@ class StockfishClient(private val context: Context) {
     private val running = AtomicBoolean(false)
 
     @Volatile var loadedNnue: String? = null
+        private set
+
+    /** Actual Threads/Hash sent at the last configure() — shown on the status screen. */
+    @Volatile var lastThreads: Int = 0
+        private set
+    @Volatile var lastHashMb: Int = 0
+        private set
+    @Volatile var lastBerserk: Boolean = false
         private set
 
     /** False after stop()/failed start: the loop must restart, not reuse, this client. */
@@ -68,16 +78,34 @@ class StockfishClient(private val context: Context) {
     private fun configure() {
         // Nets are embedded at build time (see CMakeLists.txt), so no EvalFile /
         // EvalFileSmall setoptions are needed: SF loads the embedded defaults itself.
-        send("setoption name Threads value ${defaultThreads()}")
-        send("setoption name Hash value 64")
+        // Skill/Contempt untouched: defaults are full strength (Skill 20, no limit).
+        val cores = Runtime.getRuntime().availableProcessors()
+        val memMb = totalMemMb()
+        val b = BridgeSettings.berserk
+        val threads = BridgeSettings.threadsFor(b, cores)
+        val hashMb = BridgeSettings.hashMbFor(b, memMb)
+        lastThreads = threads
+        lastHashMb = hashMb
+        lastBerserk = b
+        Log.i(TAG, "engine config: mode=${if (b) "berserk" else "normal"} threads=$threads hash=${hashMb}MB (cores=$cores mem=${memMb}MB)")
+        send("setoption name Threads value $threads")
+        send("setoption name Hash value $hashMb")
         send("setoption name MultiPV value 1")
         loadedNnue = "(embedded nn-b1a57edbea57.nnue)"
         send("isready")
         awaitLine("readyok", IDLE_TIMEOUT_MS)
     }
 
-    private fun defaultThreads(): Int =
-        (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, 4)
+    private fun totalMemMb(): Long {
+        return try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val info = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(info)
+            info.totalMem / (1024 * 1024)
+        } catch (_: Throwable) {
+            4096L // unknown: assume a small phone so berserk stays conservative
+        }
+    }
 
     /**
      * Analyze `fen`. With [depth] > 0 uses `go depth` (ignores [movetimeMs]);
@@ -96,6 +124,10 @@ class StockfishClient(private val context: Context) {
         if (depth > 0) send("go depth $depth") else send("go movetime $movetimeMs")
         var best: BestMove? = null
         var lastScoreCp: Int? = null
+        // Final search depth (last `info depth` before bestmove): the engine-health
+        // diagnostic shown on the banner/status screen. A healthy engine reaches
+        // 20+ here at 1500ms+; single digits mean something is throttling it.
+        var depth = 0
         val budget = if (depth > 0) 180_000L else movetimeMs + IDLE_TIMEOUT_MS
         val deadline = System.currentTimeMillis() + budget
         // Watchdog: readLine() below blocks with NO timeout, so the deadline check in
@@ -122,18 +154,21 @@ class StockfishClient(private val context: Context) {
                     break
                 } ?: break
                 when {
-                    line.startsWith("info") && line.contains(" score cp ") -> {
-                        val cp = line.substringAfter(" score cp ").substringBefore(' ').toIntOrNull()
-                        if (cp != null && line.contains(" pv ")) lastScoreCp = cp
-                    }
-                    line.startsWith("info") && line.contains(" score mate ") -> {
-                        val mate = line.substringAfter(" score mate ").substringBefore(' ').toIntOrNull()
-                        if (mate != null) lastScoreCp = mate * 10000
+                    line.startsWith("info depth ") -> {
+                        line.substringAfter("info depth ").substringBefore(' ')
+                            .toIntOrNull()?.let { if (it > depth) depth = it }
+                        if (line.contains(" score cp ")) {
+                            val cp = line.substringAfter(" score cp ").substringBefore(' ').toIntOrNull()
+                            if (cp != null && line.contains(" pv ")) lastScoreCp = cp
+                        } else if (line.contains(" score mate ")) {
+                            val mate = line.substringAfter(" score mate ").substringBefore(' ').toIntOrNull()
+                            if (mate != null) lastScoreCp = mate * 10000
+                        }
                     }
                     line.startsWith("bestmove") -> {
                         val uci = line.split(' ').getOrNull(1)
                         val ponder = line.split(" ponder ").getOrNull(1)?.trim()
-                        best = uci?.let { BestMove(it, ponder, lastScoreCp) }
+                        best = uci?.let { BestMove(it, ponder, lastScoreCp, depth) }
                         break
                     }
                 }
@@ -192,4 +227,4 @@ class StockfishClient(private val context: Context) {
     }
 }
 
-data class BestMove(val uci: String, val ponder: String?, val scoreCp: Int?)
+data class BestMove(val uci: String, val ponder: String?, val scoreCp: Int?, val depth: Int = 0)

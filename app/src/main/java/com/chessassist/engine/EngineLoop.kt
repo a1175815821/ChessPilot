@@ -78,6 +78,10 @@ object EngineLoop {
     @Volatile var lastScoreUser: String? = null
         private set
 
+    /** Final search depth of the last analysis (0 = unknown): engine-health readout. */
+    @Volatile var lastDepth: Int = 0
+        private set
+
     /** Last time the hook published a position (0 = never: LSPosed side not working). */
     @Volatile var lastPositionAt: Long = 0
         private set
@@ -121,8 +125,8 @@ object EngineLoop {
 
     fun stop() {
         running.set(false)
-        // Bump FIRST: a stale worker must fail its next generation check even if
-        // someone restarts the service before it finishes unwinding.
+        // Bump FIRST: a stale worker must fail their next generation check even if
+        // someone restarts the service before they finish unwinding.
         workerGen++
         note("正在停止…")
         try { client?.stop() } catch (_: Throwable) {}
@@ -130,6 +134,19 @@ object EngineLoop {
         try { worker?.interrupt() } catch (_: Throwable) {}
         worker = null
         engineState = STATE_STOPPED
+    }
+
+    /**
+     * Apply changed engine settings (e.g. berserk toggle) live: drop the client
+     * and let the same-generation loop recreate it on the next iteration —
+     * no duplicate worker/engine (B4), 1~2 s gap, game untouched. No-op while
+     * stopped (settings take effect on the next start instead).
+     */
+    fun restartEngine(reason: String) {
+        if (!running.get()) return
+        note("引擎设置变更（$reason），重启引擎…")
+        try { client?.stop() } catch (_: Throwable) {}
+        client = null
     }
 
     /** Last known colors (for the stale banner: whose turn are we waiting on?). */
@@ -208,6 +225,15 @@ object EngineLoop {
         }
     }
 
+    /** Engine resource line for the status screen: mode + actual threads/hash + depth. */
+    private fun engineResLine(c: StockfishClient?): String {
+        val res = if (c != null && c.lastThreads > 0) {
+            "${c.lastThreads}线 · ${c.lastHashMb}MB"
+        } else "—"
+        val depth = if (lastDepth > 0) " · 深度$lastDepth" else ""
+        return "${BridgeSettings.modeShort()} · $res$depth"
+    }
+
     /** Second banner line while waiting: keep the last conclusion visible. */
     private fun lastConclusionLine(): String {
         val m = lastBestMove ?: return ""
@@ -265,6 +291,7 @@ object EngineLoop {
         val engineColor: Int,
         val hookLine: String,
         val nnue: String,
+        val engineResLine: String,
         val fen: String,
         val bestMove: String?,
         val bestAgo: String,
@@ -302,6 +329,7 @@ object EngineLoop {
             engineColor = engineColor,
             hookLine = hookState,
             nnue = c?.loadedNnue ?: "-",
+            engineResLine = engineResLine(c),
             fen = currentFen ?: "-",
             bestMove = lastBestMove,
             bestAgo = if (lastBestMove != null) ago(lastBestMoveAt) else "",
@@ -363,8 +391,9 @@ object EngineLoop {
             appendLine("引擎状态：$engineLabel")
             appendLine("Hook 连接：$hookState")
             appendLine("NNUE：${c?.loadedNnue ?: "-"}")
+            appendLine("引擎配置：${engineResLine(c)}")
             appendLine("当前 FEN：${currentFen ?: "-"}")
-            appendLine("最佳招法：${lastBestMove ?: "-"}${if (lastBestMove != null) "（${ago(lastBestMoveAt)}）" else ""}")
+            appendLine("最佳招法：${lastBestMove ?: "-"}${if (lastBestMove != null) "（${ago(lastBestMoveAt)}${if (lastDepth > 0) " · 深度$lastDepth" else ""}）" else ""}")
             if (lastBestMove != null) {
                 appendLine("${ChessMath.formatWinRate(lastScoreCp, lastScoreStm, lastScoreUser)}")
             }
@@ -444,6 +473,7 @@ object EngineLoop {
                     lastScoreCp = null
                     lastScoreStm = null
                     lastScoreUser = null
+                    lastDepth = 0
                     lastSkippedFen = null
                     note("新开局，已清空上局残留")
                 }
@@ -509,15 +539,17 @@ object EngineLoop {
                     lastScoreCp = best.scoreCp
                     lastScoreStm = stm
                     lastScoreUser = user
+                    lastDepth = best.depth
                     val wr = ChessMath.formatWinRate(best.scoreCp, stm, user)
-                    note("最佳招法 ${best.uci}（cp=${best.scoreCp}，$wr）")
+                    note("最佳招法 ${best.uci}（深度${best.depth}，cp=${best.scoreCp}，$wr）")
                     // One combined command: the hook draws AND (if enabled) auto-plays it.
                     BridgeServer.pushBestmove(
                         best.uci, fen,
                         BridgeSettings.autoPlayEnabled, BridgeSettings.autoPlayDelayMs
                     )
                     OverlayManager.showBestMove(
-                        best.uci, fen, best.scoreCp, BridgeSettings.autoPlayEnabled, user
+                        best.uci, fen, best.scoreCp, BridgeSettings.autoPlayEnabled, user,
+                        best.depth
                     )
                 } else {
                     // Transient failure (timeout/crash): do NOT mark as analysed or the

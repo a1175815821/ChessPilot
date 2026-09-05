@@ -82,6 +82,81 @@ object PromoTrace {
         hookMoveCtors(lpparam, remap)
         hookBoardController(lpparam, remap)
         hookPieceTypeMethods(lpparam)
+        hookPickerWindows()
+    }
+
+    /**
+     * Picker-window detector (log-only, zero behavior change): if the promotion
+     * picker is a Dialog/PopupWindow in its own window (invisible to the activity
+     * decor scan because WindowManagerGlobal.getViews is hidden-API-blocked), the
+     * show call reveals its decor — and the next build drives the real buttons
+     * inside it (performClick, no coordinates). Silence here + a visible picker
+     * proves it is Rive-drawn instead.
+     */
+    private fun hookPickerWindows() {
+        try {
+            XposedBridge.hookAllMethods(
+                android.app.Dialog::class.java, "show",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        try {
+                            val d = param.thisObject as? android.app.Dialog ?: return
+                            val decor = try { d.window?.decorView } catch (_: Throwable) { null }
+                            MainHook.log(
+                                "promotrace: Dialog.show ${d.javaClass.name} " +
+                                    "decor=${decor?.javaClass?.name} " +
+                                    "title=${try { d.window?.attributes?.getTitle() } catch (_: Throwable) { "?" }}"
+                            )
+                            if (decor != null) describeWindow(decor, "dialog")
+                        } catch (_: Throwable) { }
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            MainHook.log("promotrace: Dialog.show hook failed: ${t.message?.take(80)}")
+        }
+        try {
+            val pw = android.widget.PopupWindow::class.java
+            val hook = object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    try {
+                        val p = param.thisObject as? android.widget.PopupWindow ?: return
+                        val content = try { p.contentView } catch (_: Throwable) { null }
+                        MainHook.log(
+                            "promotrace: Popup.show content=${content?.javaClass?.name} " +
+                                "${content?.width}x${content?.height}"
+                        )
+                        if (content != null) describeWindow(content, "popup")
+                    } catch (_: Throwable) { }
+                }
+            }
+            for (m in pw.declaredMethods) {
+                if (m.name == "showAtLocation" || m.name == "showAsDropDown") {
+                    try { XposedBridge.hookMethod(m, hook) } catch (_: Throwable) { }
+                }
+            }
+        } catch (t: Throwable) {
+            MainHook.log("promotrace: Popup hook failed: ${t.message?.take(80)}")
+        }
+    }
+
+    /** Log-only window census: view count + any queen-text / button-row inside. */
+    private fun describeWindow(root: android.view.View, tag: String) {
+        try {
+            val all = PromotionPicker.scanViews(root)
+            MainHook.log("promotrace: $tag nodes=${all.size}")
+            var shown = 0
+            for (c in all) {
+                val t = listOfNotNull(c.desc, c.text).joinToString("|")
+                if (t.isBlank()) continue
+                if (shown < 12) {
+                    shown++
+                    MainHook.log("promotrace: $tag - ${c.cls.substringAfterLast('.')} [${c.l},${c.t}-${c.r},${c.b}] $t".take(200))
+                }
+            }
+        } catch (t: Throwable) {
+            MainHook.log("promotrace: describe $tag failed: ${t.message?.take(80)}")
+        }
     }
 
     private fun fmtArg(a: Any?): String {

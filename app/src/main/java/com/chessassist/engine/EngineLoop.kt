@@ -43,6 +43,13 @@ object EngineLoop {
 
     private val running = AtomicBoolean(false)
     private var client: StockfishClient? = null
+    /**
+     * Ponder's own engine process (P0 isolation): ponder search/ponderhit/stop
+     * traffic NEVER touches [client]'s stdin/stdout. Lifecycle mirrors the
+     * main client (lazy start on first ponder, dropped on stop/restart/kill).
+     * Guarded by worker-thread confinement, like [client].
+     */
+    private var ponderClient: StockfishClient? = null
     private var appContext: Context? = null
     private var worker: Thread? = null
 
@@ -114,9 +121,21 @@ object EngineLoop {
     // Think on the opponent's time: while it's their turn, search our reply to
     // the engine's predicted move (BestMove.ponder from the last analysis). If
     // they play it, ponderhit returns the already-searched answer instantly;
-    // anything else (or any failure) falls back to a normal search. All reads
-    // block, so the ponder search owns a second thread; the worker only ever
-    // joins it with timeouts — a stuck ponder can delay, never wedge, the loop.
+    // anything else (or any failure) falls back to a normal search.
+    //
+    // ISOLATION (P0 fix for the wrong-move/freeze saga): ponder runs on a
+    // DEDICATED engine process (ponderClient) with its own stdout reader. The
+    // old design shared one BufferedReader between analyse() and ponder() with
+    // no mutual exclusion — whichever thread woke first stole the line. A
+    // ponder bestmove (computed for a position that never happened) landed in
+    // analyse() and got auto-played as our move; conversely a stolen analyse
+    // bestmove stalled the worker for movetime+grace per cycle (frozen banner).
+    // With separate processes a stuck ponder can only waste one ponder — the
+    // analysis path is unreachable to it by construction.
+    //
+    // All ponder reads still block, so the ponder search owns a second thread;
+    // the worker only ever joins it with timeouts, and a thread that survives
+    // the join gets its whole PROCESS killed (never left as a zombie reader).
     private const val PONDERHIT_TIMEOUT_MS = 3000L
     private const val PONDER_STOP_JOIN_MS = 1500L
 
@@ -131,6 +150,9 @@ object EngineLoop {
     @Volatile private var ponderGen = 0L
     @Volatile private var ponderResult: BestMove? = null
     @Volatile private var ponderResGen = -1L
+    /** Last failed ponder-engine start: cooldown so a missing binary doesn't respawn every 200 ms. */
+    @Volatile private var lastPonderStartFailAt: Long = 0
+    private const val PONDER_START_RETRY_MS = 30_000L
 
     private val eventsLock = Any()
     private val events = ArrayDeque<String>()
@@ -154,6 +176,8 @@ object EngineLoop {
         workerGen++
         note("正在停止…")
         ensurePonderStopped()
+        try { ponderClient?.stop() } catch (_: Throwable) {}
+        ponderClient = null
         try { client?.stop() } catch (_: Throwable) {}
         client = null
         try { worker?.interrupt() } catch (_: Throwable) {}
@@ -176,28 +200,47 @@ object EngineLoop {
         }
     }
 
+    /**
+     * Clear the in-flight ponder job identity + any unconsumed result.
+     * Deliberately keeps [ponderGen] monotonic and [lastPonderMove] (the
+     * prediction for the NEXT ponder round) — those are not job state.
+     */
+    private fun clearPonderState() {
+        ponderFen = null
+        ponderMove = null
+        ponderResult = null
+        ponderResGen = -1L
+    }
+
     /** Abort any in-flight ponder (idempotent, fast). */
     private fun ensurePonderStopped() {
         val t = ponderThread
         ponderThread = null
-        ponderFen = null
-        ponderMove = null
+        clearPonderState()
         if (t == null) return
         // FIRST: tell the reader loop to exit on its next line. WITHOUT this the
-        // thread parks in readLine forever, and a later analyse() on the worker
-        // thread blocks behind it on the same BufferedReader — a silent wedge
-        // with a fresh heartbeat (the worker never reaches analyse, the reader
-        // never reads). This exact leak was caught live on-device.
+        // thread parks in readLine forever on its (now dead-end) reader.
         ponderStop.set(true)
         if (!t.isAlive) return
-        try { client?.stopPonder() } catch (_: Throwable) {}
+        // Signal the PONDER process only — the main client must never see a
+        // ponder stop/isready pair (cross-talk on a shared stream was the old
+        // wrong-move vector; separate processes make it impossible).
+        try { ponderClient?.stopPonder() } catch (_: Throwable) {}
         // Best-effort join: the stop+isready pair pushes a readyok line through
-        // the reader, which then sees the flag and exits. A wedged thread must
-        // not stall the loop (or main, via stop()).
+        // the ponder reader, which then sees the flag and exits.
         if (Thread.currentThread() !== t) {
             try { t.join(PONDER_STOP_JOIN_MS) } catch (_: Throwable) {}
             if (t.isAlive) {
-                Log.w(TAG, "ponder thread still parked after stop; leaving it (daemon)")
+                // P0: NEVER leave a zombie reader behind (the old code did —
+                // "leaving it (daemon)" — and the zombie then stole bestmove
+                // lines from analyse(), the exact wrong-move/freeze mechanism).
+                // Killing the ponder process unblocks its reader (EOF/throw)
+                // AND guarantees no stale ponder output can ever surface.
+                // Main analysis continues untouched.
+                Log.w(TAG, "ponder thread parked after stop; killing ponder engine")
+                note("极限思考线程卡住，已丢弃重建（对局不受影响）")
+                try { ponderClient?.stop() } catch (_: Throwable) {}
+                ponderClient = null
             }
         }
     }
@@ -232,8 +275,23 @@ object EngineLoop {
             val t = ponderThread
             if (fen == ponderFen && t != null && t.isAlive) return // already on it
             ensurePonderStopped()
-            val c = client
-            if (c == null || !c.isRunning()) return
+            // P0 isolation: ponder gets its OWN engine process. A ponder-engine
+            // failure only costs one ponder round — the main client (and the
+            // analysis path) is never touched here.
+            var pc = ponderClient
+            if (pc == null || !pc.isRunning()) {
+                if (System.currentTimeMillis() - lastPonderStartFailAt < PONDER_START_RETRY_MS) return
+                pc = try {
+                    StockfishClient(appContext!!).also { it.start() }
+                } catch (e: Throwable) {
+                    lastPonderStartFailAt = System.currentTimeMillis()
+                    Log.w(TAG, "ponder engine start failed: ${e.message?.take(80)}")
+                    return
+                }
+                ponderClient = pc
+                Log.i(TAG, "ponder engine up (dedicated process)")
+            }
+            val c = pc
             val gen = ++ponderGen
             ponderResult = null
             ponderResGen = -1L
@@ -285,9 +343,12 @@ object EngineLoop {
                 ensurePonderStopped()
                 return null
             }
-            val cc = client
+            // Ponder-hit goes to the PONDER process only. The main client keeps
+            // whatever state it has (usually idle) — a hit must never disturb
+            // an analysis or force a main-engine restart.
+            val cc = ponderClient
             if (cc == null || !cc.isRunning()) {
-                // Engine died/restarted mid-ponder: nothing to hit, search fresh.
+                // Ponder engine died/was dropped mid-ponder: nothing to hit, search fresh.
                 ensurePonderStopped()
                 return null
             }
@@ -305,9 +366,11 @@ object EngineLoop {
                 // it so the loop recreates fresh. (Seen live: thread parked,
                 // engine idle-but-mute, all later commands swallowed.)
                 if (hung) {
-                    Log.w(TAG, "ponderhit hung live engine; dropping it for a fresh one")
-                    try { client?.stop() } catch (_: Throwable) {}
-                    client = null
+                    // P0: only the PONDER engine dies here. The old code dropped
+                    // the MAIN client — a ponder incident restarted analysis too.
+                    Log.w(TAG, "ponderhit hung ponder engine; dropping it (main engine untouched)")
+                    try { ponderClient?.stop() } catch (_: Throwable) {}
+                    ponderClient = null
                 } else {
                     Log.w(TAG, "ponderhit produced nothing, falling back to search")
                 }
@@ -335,6 +398,14 @@ object EngineLoop {
     fun restartEngine(reason: String) {
         if (!running.get()) return
         note("引擎设置变更（$reason），重启引擎…")
+        // Ponder process FIRST: stop() destroys it, which unblocks a parked
+        // ponder reader instantly — the join inside ensurePonderStopped() then
+        // returns fast even though this runs on the main thread (settings UI).
+        // Also clears any pre-restart ponder result so it can never "hit" on
+        // the fresh engine (stale-hit wrong-move vector, now closed).
+        try { ponderClient?.stop() } catch (_: Throwable) {}
+        ponderClient = null
+        ensurePonderStopped()
         try { client?.stop() } catch (_: Throwable) {}
         client = null
     }
@@ -413,6 +484,21 @@ object EngineLoop {
         synchronized(eventsLock) {
             events.addLast(line)
             while (events.size > MAX_EVENTS) events.removeFirst()
+        }
+    }
+
+    /**
+     * One-line ponder state for the status screen. Ponder used to be a black box
+     * here, which is exactly why the wrong-move/freeze saga took so long to
+     * localize — never again: any future ponder incident shows its face here.
+     */
+    fun ponderLine(): String {
+        if (!BridgeSettings.ponderEnabled) return "关"
+        val t = ponderThread
+        return when {
+            t != null && t.isAlive -> "ponder中（应招${ponderMove ?: "?"}）"
+            ponderClient?.isRunning() == true -> "待机（引擎在线）"
+            else -> "开·引擎未启动"
         }
     }
 
@@ -522,6 +608,7 @@ object EngineLoop {
         val hookLine: String,
         val nnue: String,
         val engineResLine: String,
+        val ponderLine: String,
         val fen: String,
         val bestMove: String?,
         val bestAgo: String,
@@ -560,6 +647,7 @@ object EngineLoop {
             hookLine = hookState,
             nnue = c?.loadedNnue ?: "-",
             engineResLine = engineResLine(c),
+            ponderLine = ponderLine(),
             fen = currentFen ?: "-",
             bestMove = lastBestMove,
             bestAgo = if (lastBestMove != null) ago(lastBestMoveAt) else "",
@@ -622,6 +710,7 @@ object EngineLoop {
             appendLine("Hook 连接：$hookState")
             appendLine("NNUE：${c?.loadedNnue ?: "-"}")
             appendLine("引擎配置：${engineResLine(c)}")
+            appendLine("极限思考：${ponderLine()}")
             appendLine("当前 FEN：${currentFen ?: "-"}")
             appendLine("最佳招法：${lastBestMove ?: "-"}${if (lastBestMove != null) "（${ago(lastBestMoveAt)}${if (lastDepth > 0) " · 深度$lastDepth" else ""}）" else ""}")
             if (lastBestMove != null) {

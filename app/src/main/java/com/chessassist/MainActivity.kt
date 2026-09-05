@@ -306,6 +306,7 @@ class MainActivity : Activity() {
             appendLine("引擎：${s.engineResLine}")
             appendLine("局面：${s.fen.take(48)}")
             appendLine("思考：${s.settingsLine}　自动：${s.autoLine}")
+            appendLine("极限思考：${s.ponderLine}")
             append("心跳：${s.heartbeatAgo}")
             if (s.staleMinOrNull != null) append("　停滞${s.staleMinOrNull}分")
             if (s.oursTurnWaiting) append("　轮到你走棋")

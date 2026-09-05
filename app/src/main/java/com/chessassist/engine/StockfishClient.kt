@@ -195,8 +195,12 @@ class StockfishClient(private val context: Context) {
         // Final search depth (last `info depth` before bestmove): the engine-health
         // diagnostic shown on the banner/status screen. A healthy engine reaches
         // 20+ here at 1500ms+; single digits mean something is throttling it.
-        var depth = 0
-        val budget = if (depth > 0) 180_000L else movetimeMs + IDLE_TIMEOUT_MS
+        // NOTE: the local counter must NOT shadow the `depth` parameter — the old
+        // `var depth = 0` made the budget check below always take the movetime
+        // branch, so `go depth` searches waited movetime+grace instead of 180 s.
+        val wantDepth = depth
+        var reached = 0
+        val budget = if (wantDepth > 0) 180_000L else movetimeMs + IDLE_TIMEOUT_MS
         val deadline = System.currentTimeMillis() + budget
         // Watchdog: readLine() below blocks with NO timeout, so the deadline check in
         // the loop condition cannot fire while stuck inside it (hung search with no
@@ -224,7 +228,7 @@ class StockfishClient(private val context: Context) {
                 when {
                     line.startsWith("info depth ") -> {
                         line.substringAfter("info depth ").substringBefore(' ')
-                            .toIntOrNull()?.let { if (it > depth) depth = it }
+                            .toIntOrNull()?.let { if (it > reached) reached = it }
                         if (line.contains(" score cp ")) {
                             val cp = line.substringAfter(" score cp ").substringBefore(' ').toIntOrNull()
                             if (cp != null && line.contains(" pv ")) lastScoreCp = cp
@@ -236,7 +240,7 @@ class StockfishClient(private val context: Context) {
                     line.startsWith("bestmove") -> {
                         val uci = line.split(' ').getOrNull(1)
                         val ponder = line.split(" ponder ").getOrNull(1)?.trim()
-                        best = uci?.let { BestMove(it, ponder, lastScoreCp, depth) }
+                        best = uci?.let { BestMove(it, ponder, lastScoreCp, reached) }
                         break
                     }
                 }
@@ -297,6 +301,14 @@ class StockfishClient(private val context: Context) {
         stopFlag: AtomicBoolean
     ): BestMove? {
         if (!running.get()) return null
+        // Same poison-FEN defense as analyse(): SF 19 terminates the process on
+        // invalid input, and a dead ponder engine must not take the main one
+        // down with it (separate processes now, but a crash-loop still wastes
+        // the opponent's clock and spams the event log).
+        if (!isSaneFen(fen)) {
+            Log.w(TAG, "ponder refusing malformed FEN: ${fen.take(80)}")
+            return null
+        }
         val r: BufferedReader?
         synchronized(lock) { r = reader }
         if (r == null) return null

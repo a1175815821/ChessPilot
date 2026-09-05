@@ -233,9 +233,7 @@ object OverlayManager {
     private val defaultDetailColor = Color.parseColor("#BDBDBD")
 
     /** Core writer: persistent two-line banner. */
-    @Volatile private var lastTitle: String = ""
     fun showStatus(title: String, detail: String = "") {
-        lastTitle = title
         main.post {
             titleTv?.text = title
             detailTv?.text = detail
@@ -246,14 +244,11 @@ object OverlayManager {
         }
     }
 
-    /** Stale annotator must not wipe an explicit manual-help request. */
-    fun isHelpShown(): Boolean = lastTitle == "需要手动操作"
-
     /** Analysis running for the user's turn. */
     fun showThinking(autoplay: Boolean) {
-        lastTitle = if (autoplay) "自动走棋中…" else "等待走棋中…"
+        val title = if (autoplay) "自动走棋中…" else "等待走棋中…"
         main.post {
-            titleTv?.text = lastTitle
+            titleTv?.text = title
             detailTv?.text = "正在计算…"
             detailTv?.visibility = View.VISIBLE
             // B1: "正在计算…" is not a verdict — reset the win-rate color that a
@@ -272,7 +267,6 @@ object OverlayManager {
         val line2 = ChessMath.formatWinRate(scoreCp, stm, userColor)
         val rate = ChessMath.userWinRate01(scoreCp, stm, userColor)
         val title = if (autoplay) "自动走棋中：$uci" else "推荐：$uci"
-        lastTitle = title
         main.post {
             titleTv?.text = title
             detailTv?.text = line2
@@ -288,14 +282,16 @@ object OverlayManager {
         main.post {
             // Don't wipe a fresher state that arrived out of order. "局面停滞" is
             // deliberately replaceable (B2): it is written by the idle annotator,
-            // and any live skip means the game moved on. "需要手动操作" stays
-            // protected — explicit user guidance must never be auto-overwritten.
+            // and any live skip means the game moved on. Manual pleas
+            // ("升变请手动选皇后" / "请手动走棋") need no protection: they only
+            // fire on the user's turn with a static board, which neither this
+            // clear (opponent's turn only) nor the stale annotator (silent on
+            // the user's turn) can overwrite; fresh analysis replaces them.
             val cur = titleTv?.text.toString()
             if (cur.startsWith("推荐") || cur.startsWith("自动走棋中") ||
                 cur.startsWith("等待走棋中") || cur.startsWith("象棋助手") ||
                 cur.startsWith("局面停滞")
             ) {
-                lastTitle = reason
                 titleTv?.text = reason
                 detailTv?.text = detail
                 detailTv?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE

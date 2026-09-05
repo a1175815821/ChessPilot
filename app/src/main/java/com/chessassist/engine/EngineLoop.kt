@@ -178,16 +178,20 @@ object EngineLoop {
 
     /**
      * The hook gave up auto-playing and asks the user to finish manually.
-     * Banner + event guide instead of dying silent (which used to deadlock the
-     * game: same position forever, no retrigger, no next move).
+     * Shown DIRECTLY on the floating overlay (title = the plea itself) — there
+     * is no separate help-banner state: help only ever fires on the user's turn
+     * with a static board, where neither clear() (opponent's turn only) nor the
+     * stale annotator (silent on the user's turn) can overwrite it. The next
+     * fresh analysis replaces it naturally. Event log kept for diagnostics.
      */
     fun onNeedHelp(code: String, uci: String) {
-        val detail = when (code) {
-            "promotion" -> "升变请手动选皇后（${uci}）"
-            else -> "自动走棋未落子，请手动走 ${uci}"
+        if (code == "promotion") {
+            note("升变请手动选皇后：$uci")
+            OverlayManager.showStatus("升变请手动选皇后", uci)
+        } else {
+            note("请手动走棋：$uci")
+            OverlayManager.showStatus("请手动走棋", uci)
         }
-        note("需要手动操作：$detail")
-        OverlayManager.showStatus("需要手动操作", detail)
     }
 
     /** Recent lifecycle events for the in-app status screen (newest last). */
@@ -233,7 +237,7 @@ object EngineLoop {
         val idle = System.currentTimeMillis() - lastPositionAt
         if (idle <= STALE_AFTER_MS) return
         val now = System.currentTimeMillis()
-        if (now - lastStaleBannerAt > 30_000 && !OverlayManager.isHelpShown()) {
+        if (now - lastStaleBannerAt > 30_000) {
             lastStaleBannerAt = now
             // No nagging: when it's the user's turn we stay silent on the banner
             // (the last analysis stays visible) — demanding taps was rightly called

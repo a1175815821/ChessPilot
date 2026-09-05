@@ -21,7 +21,8 @@ import kotlin.math.abs
  * Promotion is manual-only, deliberately: the picker is Rive-drawn (no Views,
  * no window, no semantics to drive) and every coordinate scheme proved fragile
  * across files and resolutions. A promotion UCI (5 chars) never taps — it goes
- * straight to [requestManualPromotion]: companion banner + in-game toast.
+ * straight to [requestManualPromotion], which reports to the companion; the
+ * floating overlay then shows the plea directly as its title.
  */
 class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
@@ -166,27 +167,13 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
      * deadlock the whole game: same position, no retrigger, no next move ever).
      */
     /**
-     * Promotion is manual-only: announce on the companion banner + an in-game
-     * toast, tap nothing. Deliberately stable — no picker driving of any kind.
+     * Promotion is manual-only: report to the companion (which shows the plea
+     * directly on the floating overlay), tap nothing. Deliberately stable —
+     * no picker driving of any kind.
      */
     private fun requestManualPromotion(uci: String) {
         MainHook.log("autoplay: promotion $uci — manual pick requested, no taps")
         BridgeClient.sendHelp("promotion", uci)
-        showHelpToast("升变请手动选皇后（$uci）")
-    }
-
-    /**
-     * The companion banner lives in the OTHER app, invisible mid-game — mirror
-     * the plea as a system toast inside Duolingo itself (text toasts need no
-     * overlay permission).
-     */
-    private fun showHelpToast(msg: String) {
-        try {
-            val ctx = BridgeAccess.context ?: return
-            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
-        } catch (t: Throwable) {
-            MainHook.log("autoplay: toast failed: ${t.message?.take(80)}")
-        }
     }
 
     private fun scheduleAppliedCheck(
@@ -211,7 +198,6 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                 MainHook.log("autoplay: giving up after $attempts attempts: $uci")
                 finishFlight(key)
                 BridgeClient.sendHelp("stuck", uci)
-                showHelpToast("请手动走 $uci")
             } catch (t: Throwable) {
                 MainHook.log("autoplay verify failed: $t")
             }

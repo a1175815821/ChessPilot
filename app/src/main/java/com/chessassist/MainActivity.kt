@@ -181,7 +181,7 @@ class MainActivity : Activity() {
         }
         root.addView(autoSwitch)
         root.addView(TextView(this).apply {
-            text = "违反 ToS，有封号风险。"
+            text = "全自动模拟触摸下棋，谨慎使用。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
@@ -212,12 +212,12 @@ class MainActivity : Activity() {
         }
         advancedBox.addView(berserkSwitch)
         advancedBox.addView(TextView(this).apply {
-            text = "发热大，烫手就关。"
+            text = "极限资源配给强计算，功耗提高。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
         ponderSwitch = Switch(this).apply {
-            text = "后台思考"
+            text = "极限思考"
             textSize = 15f
             isChecked = BridgeSettings.ponderEnabled
             setOnCheckedChangeListener { _, on ->
@@ -229,7 +229,7 @@ class MainActivity : Activity() {
         }
         advancedBox.addView(ponderSwitch)
         advancedBox.addView(TextView(this).apply {
-            text = "对手走棋时也算，中了直接出招。费电发热。"
+            text = "对手走棋时同步预测，功耗提高。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
@@ -261,7 +261,7 @@ class MainActivity : Activity() {
         updateAdvancedHeader()
 
         root.addView(TextView(this).apply {
-            text = "无反应：LSPosed 启用本模块，勾选多邻国后重启手机。"
+            text = "无反应：LSPosed 启用本模块，勾选多邻国后重启多邻国 App。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
             setPadding(0, pad / 2, 0, 0)

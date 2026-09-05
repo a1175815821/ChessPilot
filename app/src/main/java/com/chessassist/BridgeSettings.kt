@@ -42,11 +42,12 @@ object BridgeSettings {
     @Volatile var berserk: Boolean = false
 
     /**
-     * Ponder (think on the opponent's time): while waiting for the opponent,
-     * search our reply to the engine's predicted move; if they play it, the
-     * answer is instant via ponderhit. Default OFF: it runs the CPU ~100% of
-     * the game (heat/battery) instead of ~50%. No restart needed on toggle —
-     * the loop reads this flag live every iteration.
+     * 极限思考 Ponder (think on the opponent's time): while waiting for the
+     * opponent, search our reply to the engine's predicted move; if they play
+     * it, the answer is instant via ponderhit. Default OFF: it runs the CPU
+     * ~100% of the game (heat/battery) instead of ~50%. No restart needed on
+     * toggle — the loop reads this flag live every iteration. While a ponder
+     * job is live, the floating overlay's waiting line carries 极限思考中.
      */
     @Volatile var ponderEnabled: Boolean = false
 
@@ -79,7 +80,7 @@ object BridgeSettings {
 
     fun describe(): String =
         (if (searchDepth > 0) "固定深度 $searchDepth 层" else "思考时间 ${movetimeMs}ms") +
-            if (ponderEnabled) " · 后台思考开" else ""
+            if (ponderEnabled) " · 极限思考开" else ""
 
     fun modeShort(): String = if (berserk) "狂暴" else "普通"
 

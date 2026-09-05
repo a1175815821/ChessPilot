@@ -167,6 +167,15 @@ object EngineLoop {
      * no join — main must never block on a socket reader).
      */
 
+    /** True while a ponder search thread is actually running. */
+    private fun isPonderLive(): Boolean {
+        return try {
+            ponderThread?.isAlive == true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     /** Abort any in-flight ponder (idempotent, fast). */
     private fun ensurePonderStopped() {
         val t = ponderThread
@@ -736,12 +745,22 @@ object EngineLoop {
                 // lagging turn/user fields must be re-evaluated when corrected values
                 // arrive (same fen). Marking it poisoned the position forever.
                 if (!userIsToMove && user != null) {
+                    // Opponent's clock is free thinking time when ponder is on.
+                    // Start the job BEFORE painting so the overlay suffix below
+                    // reflects the live job, not last iteration's state.
+                    maybePonder(fen)
                     if (fen != lastSkippedFen) {
                         lastSkippedFen = fen
-                        OverlayManager.clear("等待对手走棋…", lastConclusionLine())
+                        // Mirror the ponder state on the floating overlay, only
+                        // while it's the opponent's turn: a live job appends
+                        // 极限思考中 to the waiting line. Title untouched.
+                        val conclusion = lastConclusionLine()
+                        val detail = if (isPonderLive()) {
+                            if (conclusion.isEmpty()) "极限思考中"
+                            else "$conclusion · 极限思考中"
+                        } else conclusion
+                        OverlayManager.clear("等待对手走棋…", detail)
                     }
-                    // Opponent's clock is free thinking time when ponder is on.
-                    maybePonder(fen)
                     // Reachable even when positions keep arriving: a perpetual
                     // opponent-turn (bot stuck, lesson fetching) must still age
                     // into the stale annotation instead of looking like waiting.

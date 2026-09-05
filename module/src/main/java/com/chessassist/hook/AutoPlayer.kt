@@ -137,6 +137,9 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
         // and arm the PromoTrace window (covers 3 attempts + the user's manual tap).
         prePromoKeys = if (promo != null) {
             try { PromoTrace.arm() } catch (_: Throwable) { }
+            // Census the live Rive controller while the picker is about to open:
+            // artboards, state machines, input names/values, game listeners.
+            try { RivePicker.probeRive("arm") } catch (_: Throwable) { }
             try { PromotionPicker.snapshotKeys(view) } catch (_: Throwable) { emptySet() }
         } else emptySet()
         tapSquare(view, from, flipped)

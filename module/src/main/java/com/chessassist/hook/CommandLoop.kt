@@ -56,6 +56,7 @@ object CommandLoop {
                 "promoscan" -> {
                     ensurePlayer()?.debugScanCurrentBoard()
                     try { PromoTrace.inventoryRive() } catch (_: Throwable) { }
+                    try { RivePicker.probeRive("scan") } catch (_: Throwable) { }
                 }
                 // Kept for backward compat: remembered but no longer gates autoplay.
                 "config" -> BridgePublisher.autoPlayEnabled = cmd["autoplay"] == "1"

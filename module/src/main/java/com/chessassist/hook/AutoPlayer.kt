@@ -18,12 +18,11 @@ import kotlin.math.abs
  *       white: x = left + file*cell,            y = top + (7-(rank-1))*cell
  *       black: x = left + (7-file)*cell,        y = top + (rank-1)*cell
  *
- * Promotion (CONFIRMED from the lesson JSON flow + ChessPuzzleViewModel):
- *   tap destination → app opens the promotion picker overlay → tap the queen cell.
- *   The picker is a Compose row of piece buttons near the destination square's file;
- *   we tap the square above the destination (queen is always the topmost/first option,
- *   white perspective), then verify via the state bridge that the move was applied;
- *   otherwise fall back to tapping the destination square again.
+ * Promotion: tap destination → app opens the promotion picker overlay → the
+ * adaptive [PromotionPicker] driver taps the real queen button (View tree, then
+ * Compose semantics, both fully logged), falling back to the board-relative guess
+ * (one cell toward the board center from the destination square) only when the
+ * picker exposes nothing scannable. The move is then verified via the state bridge.
  */
 class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
@@ -39,6 +38,12 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
     private var attemptKey: String? = null
     private var attempts = 0
+
+    /**
+     * Clickable-set snapshot taken before the select-tap of a promotion move, so the
+     * picker driver can diff what the destination-tap added (see PromotionPicker).
+     */
+    private var prePromoKeys: Set<String> = emptySet()
 
     /**
      * Generation of the currently-live tap chain. A new (fen,move) command supersedes
@@ -127,6 +132,11 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
         attempts++
         // Human-like gap with ±20% jitter; Duolingo highlights the selected square here.
         val jittered = (gap * (0.8 + rand.nextDouble() * 0.4)).toLong()
+        // Promotion only: snapshot the clickable set BEFORE the select-tap so the
+        // picker driver can diff what the destination-tap opens (runs on UI thread).
+        prePromoKeys = if (promo != null) {
+            try { PromotionPicker.snapshotKeys(view) } catch (_: Throwable) { emptySet() }
+        } else emptySet()
         tapSquare(view, from, flipped)
         mainHandler.postDelayed({
             try {
@@ -196,30 +206,61 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
     /**
      * After tapping the destination square, the app shows the promotion picker.
-     * Queen-tap geometry here is a BEST GUESS (picker expands from the promotion
-     * rank toward the board center: white rank-1, black rank+1) — NOT confirmed
-     * against the real Compose picker. If you can see the picker, tell us where
-     * the queen button sits relative to the destination square and we'll pin it.
+     * First the adaptive driver ([PromotionPicker] L1 View tree + L2 Compose
+     * semantics) tries the real queen button; only when it finds nothing do we
+     * fall back to the board-relative guess (picker assumed Rive-drawn: queen is
+     * the cell one rank toward the board center from the destination square).
+     * 800 ms (was 350): the old delay fired before the picker finished opening.
      * Verification + bounded retry is unified in scheduleAppliedCheck (no local retry
      * here on purpose: two retry loops would double-tap and fight each other).
      */
     private fun handlePromotion(
         view: View, toSquare: String, flipped: Boolean, startFen: String?, key: String
     ) {
-        val file = toSquare[0] - 'a'
-        val rank = toSquare[1] - '1'
-        val queenCellRank = if (flipped) rank + 1 else rank - 1
-        val inBoard = queenCellRank in 0..7
-        if (!inBoard) {
-            MainHook.log("promotion: queen guess off-board, skipping guess tap ($toSquare)")
-            return
-        }
         mainHandler.postDelayed({
             try {
                 if (isSuperseded(key, startFen, "promo@$toSquare")) return@postDelayed
-                tapSquareAt(view, file, queenCellRank, flipped)
+                val tapped = try {
+                    PromotionPicker.resolveAndTap(view, prePromoKeys, ::tapViewAt)
+                } catch (t: Throwable) {
+                    MainHook.log("promotion driver threw: ${t.message?.take(100)}")
+                    false
+                }
+                if (!tapped) boardGuessQueen(view, toSquare, flipped)
             } catch (t: Throwable) { MainHook.log("promotion tap failed: $t") }
-        }, 350)
+        }, 800)
+    }
+
+    /** L3 fallback: the historical board-relative queen-cell guess. */
+    private fun boardGuessQueen(view: View, toSquare: String, flipped: Boolean) {
+        val file = toSquare[0] - 'a'
+        val rank = toSquare[1] - '1'
+        val queenCellRank = if (flipped) rank + 1 else rank - 1
+        if (queenCellRank !in 0..7) {
+            MainHook.log("promotion: queen guess off-board, skipping guess tap ($toSquare)")
+            return
+        }
+        MainHook.log("promotion: L3 board guess tap (${'a' + file}${queenCellRank + 1})")
+        tapSquareAt(view, file, queenCellRank, flipped)
+    }
+
+    /**
+     * Read-only probe: dump the current screen's view + Compose-semantics structure
+     * to the log without tapping anything. Triggered by the hidden "promoscan"
+     * socket command — safe to run on a live game screen any time.
+     */
+    fun debugScanCurrentBoard() {
+        mainHandler.post {
+            try {
+                val view = RiveViewFinder.bestRiveView() ?: RiveViewFinder.ensure() ?: run {
+                    MainHook.log("promoscan: no board view")
+                    return@post
+                }
+                PromotionPicker.logOnlyScan(view)
+            } catch (t: Throwable) {
+                MainHook.log("promoscan failed: $t")
+            }
+        }
     }
 
     /** Send a full tap gesture (DOWN → 2 MOVEs → UP) centered on `squareName`. */
@@ -235,9 +276,18 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
         val cell = minOf(view.width, view.height).toFloat() / 8f
         val x = bx + (rand.nextFloat() - 0.5f) * 0.16f * cell
         val y = by + (rand.nextFloat() - 0.5f) * 0.16f * cell
+        tapViewAt(view, x, y, "${'a' + file}${rank + 1} flipped=$flipped")
+    }
+
+    /**
+     * Send a full tap gesture (DOWN → 2 MOVEs → UP) at target-local coordinates.
+     * The target can be any view in any window (board, queen button, window root):
+     * dispatching directly on it bypasses window hit-routing, and the coordinates
+     * are interpreted in that view's own frame.
+     */
+    private fun tapViewAt(target: View, x: Float, y: Float, label: String) {
         val loc = IntArray(2)
-        view.getLocationOnScreen(loc)
-        val sq = "${'a' + file}${rank + 1}"
+        target.getLocationOnScreen(loc)
         // Deliberate press (~150-230 ms): instant down/up taps sometimes don't register
         // and the piece snaps back.
         val press = 150L + rand.nextInt(80)
@@ -252,15 +302,15 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
             return MotionEvent.obtain(downTime, t, action, 1, props, coords, 0, 0, 1f, 1f,
                 0, 0, android.view.InputDevice.SOURCE_TOUCHSCREEN, 0)
         }
-        val downRet = view.dispatchTouchEvent(ev(MotionEvent.ACTION_DOWN, x, y, downTime))
-        val moveRet = view.dispatchTouchEvent(ev(MotionEvent.ACTION_MOVE, x, y, downTime + press / 3))
-        view.dispatchTouchEvent(ev(MotionEvent.ACTION_MOVE, x, y, downTime + 2 * press / 3))
-        val upRet = view.dispatchTouchEvent(ev(MotionEvent.ACTION_UP, x, y, downTime + press))
+        val downRet = target.dispatchTouchEvent(ev(MotionEvent.ACTION_DOWN, x, y, downTime))
+        val moveRet = target.dispatchTouchEvent(ev(MotionEvent.ACTION_MOVE, x, y, downTime + press / 3))
+        target.dispatchTouchEvent(ev(MotionEvent.ACTION_MOVE, x, y, downTime + 2 * press / 3))
+        val upRet = target.dispatchTouchEvent(ev(MotionEvent.ACTION_UP, x, y, downTime + press))
         MainHook.log(
-            "tap $sq -> (${x.toInt()},${y.toInt()}) " +
-                "view=${view.javaClass.name.substringAfterLast('.')} " +
-                "${view.width}x${view.height}@(${loc[0]},${loc[1]}) " +
-                "shown=${view.isShown} flipped=$flipped ret=$downRet/$moveRet/$upRet"
+            "tap $label -> (${x.toInt()},${y.toInt()}) " +
+                "view=${target.javaClass.name.substringAfterLast('.')} " +
+                "${target.width}x${target.height}@(${loc[0]},${loc[1]}) " +
+                "shown=${target.isShown} ret=$downRet/$moveRet/$upRet"
         )
     }
 

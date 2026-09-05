@@ -50,6 +50,10 @@ object CommandLoop {
                     }
                 }
                 "clear" -> ensurePainter()?.clear()
+                // Hidden probe: dump the current screen's view + Compose-semantics
+                // structure to the LSPosed log without tapping anything. Used to
+                // learn the promotion picker's structure on a live game screen.
+                "promoscan" -> ensurePlayer()?.debugScanCurrentBoard()
                 // Kept for backward compat: remembered but no longer gates autoplay.
                 "config" -> BridgePublisher.autoPlayEnabled = cmd["autoplay"] == "1"
                 // Semi-auto: user tapped the banner button — play the exact pair the

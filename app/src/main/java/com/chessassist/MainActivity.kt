@@ -80,11 +80,28 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
         }
-        root.addView(TextView(this).apply {
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        titleRow.addView(TextView(this).apply {
             text = "ChessPilot"
             textSize = 22f
             paint.isFakeBoldText = true
         })
+        try {
+            val vn = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+            if (vn.isNotEmpty()) {
+                titleRow.addView(TextView(this).apply {
+                    text = "v$vn"
+                    textSize = 12f
+                    setTextColor(Color.parseColor("#9E9E9E"))
+                    setPadding(dp(8), dp(6), 0, 0)
+                })
+            }
+        } catch (_: Throwable) {
+        }
+        root.addView(titleRow)
 
         // ---- status card ----
         val card = LinearLayout(this).apply {
@@ -153,7 +170,7 @@ class MainActivity : Activity() {
 
         // ---- autoplay ----
         autoSwitch = Switch(this).apply {
-            text = "自动走棋（在棋盘上自动走出最佳招）"
+            text = "自动走棋"
             textSize = 15f
             isChecked = BridgeSettings.autoPlayEnabled
             setOnCheckedChangeListener { _, on ->
@@ -163,7 +180,7 @@ class MainActivity : Activity() {
         }
         root.addView(autoSwitch)
         root.addView(TextView(this).apply {
-            text = "提醒：自动走棋违反多邻国 ToS，有封号风险，默认关闭。"
+            text = "违反 ToS，有封号风险。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
@@ -181,7 +198,7 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         berserkSwitch = Switch(this).apply {
-            text = "狂暴模式（线程拉满+大内存，关键局用）"
+            text = "狂暴模式"
             textSize = 15f
             isChecked = BridgeSettings.berserk
             setOnCheckedChangeListener { _, on ->
@@ -194,7 +211,7 @@ class MainActivity : Activity() {
         }
         advancedBox.addView(berserkSwitch)
         advancedBox.addView(TextView(this).apply {
-            text = "狂暴满载发热大，降频反而更弱；烫手就关。思考时间共用上面滑杆，建议≥1500ms。"
+            text = "发热大，烫手就关。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
@@ -226,7 +243,7 @@ class MainActivity : Activity() {
         updateAdvancedHeader()
 
         root.addView(TextView(this).apply {
-            text = "对局无反应的话：去 LSPosed 管理器启用本模块，作用域勾选多邻国（com.duolingo），然后重启手机。"
+            text = "无反应：LSPosed 启用本模块，勾选多邻国后重启手机。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
             setPadding(0, pad / 2, 0, 0)
@@ -331,14 +348,18 @@ class MainActivity : Activity() {
         BridgeSettings.searchDepth = depthBar.progress
         BridgeSettings.autoPlayDelayMs = 150L + speedBar.progress * 50L
         BridgeSettings.save(this)
-        timeLabel.text = "思考时间：${BridgeSettings.movetimeMs}ms（固定深度开启时忽略）"
+        // Fixed depth makes the time slider meaningless — grey it out instead
+        // of explaining it in small print.
+        val byTime = BridgeSettings.searchDepth == 0
+        timeBar.isEnabled = byTime
+        timeLabel.alpha = if (byTime) 1f else 0.4f
+        timeLabel.text = "思考时间 ${BridgeSettings.movetimeMs}ms"
         depthLabel.text = if (BridgeSettings.searchDepth > 0) {
-            "固定深度：${BridgeSettings.searchDepth} 层（手机上超过 22 层会很慢）"
+            "固定深度 ${BridgeSettings.searchDepth} 层"
         } else {
-            "固定深度：按时间思考"
+            "固定深度 关"
         }
-        speedLabel.text =
-            "走棋间隔：${BridgeSettings.autoPlayDelayMs}ms（每步±20%随机浮动；太小容易点不上弹回）"
+        speedLabel.text = "走棋间隔 ${BridgeSettings.autoPlayDelayMs}ms"
     }
 
     override fun onResume() {

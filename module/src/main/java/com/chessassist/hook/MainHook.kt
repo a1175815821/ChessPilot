@@ -232,21 +232,6 @@ class MainHook : IXposedHookLoadPackage {
             }
         }
 
-        // 3) observe square taps → these are what the auto-player replays
-        //    `f(Int, Int): Square` converts a logical (col,row) tap to a Square.
-        for (m in clz.declaredMethods) {
-            val pt = m.parameterTypes
-            if (pt.size == 2 && pt[0] == Integer.TYPE && pt[1] == Integer.TYPE &&
-                m.returnType == remap.resolveClass(loader, "square")
-            ) {
-                BridgeAccess.squareFromTapMethod = m
-                log("boardController tap→square: ${m.name}")
-            }
-        }
-
-        // Expose the controller to the painter/auto-player.
-        BridgeAccess.boardControllerClass = clz
-
         // Locate the live board View inside the controller so that OverlayFallback
         // and AutoPlayer have real view bounds to work with. Runtime field scan
         // (RiveViewFinder): matching declared types by name fails after R8 renames

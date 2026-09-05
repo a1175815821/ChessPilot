@@ -2,8 +2,6 @@ package com.chessassist.hook
 
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
-import kotlin.math.abs
 
 /**
  * Optional auto-play: executes Stockfish's move on the real board by dispatching
@@ -24,7 +22,7 @@ import kotlin.math.abs
  * straight to [requestManualPromotion], which reports to the companion; the
  * floating overlay then shows the plea directly as its title.
  */
-class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
+class AutoPlayer(private val bridge: StateBridge) {
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val rand = java.util.Random()

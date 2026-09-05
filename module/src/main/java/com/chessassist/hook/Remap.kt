@@ -51,8 +51,6 @@ class Remap private constructor(private var map: JSONObject) {
 object BridgeAccess {
     @Volatile var context: Context? = null
     @Volatile var boardController: Any? = null
-    @Volatile var boardControllerClass: Class<*>? = null
-    @Volatile var squareFromTapMethod: java.lang.reflect.Method? = null
     /** Last known user color ("w"|"b") — mirrors StateBridge for flip-aware fallbacks. */
     @Volatile var lastUserColor: String? = null
 

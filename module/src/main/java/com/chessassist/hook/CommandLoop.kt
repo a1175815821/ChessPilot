@@ -74,8 +74,8 @@ object CommandLoop {
     }
 
     private fun ensurePlayer(): AutoPlayer? {
-        if (playerInst == null && remapInst != null && bridgeInst != null)
-            playerInst = AutoPlayer(remapInst!!, bridgeInst!!)
+        if (playerInst == null && bridgeInst != null)
+            playerInst = AutoPlayer(bridgeInst!!)
         return playerInst
     }
 }

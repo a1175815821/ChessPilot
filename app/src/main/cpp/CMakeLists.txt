@@ -47,16 +47,7 @@ set_target_properties(stockfish-bin PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
 )
 
-# ---------------------------------------------------------------------------
-# Optional in-process JNI variant (alternative to subprocess; see StockfishJni.kt).
-# Build with -DENABLE_JNI_ENGINE=ON if you prefer linking Stockfish into the app.
-# ---------------------------------------------------------------------------
-option(ENABLE_JNI_ENGINE "Build in-process JNI engine" OFF)
-if (ENABLE_JNI_ENGINE)
-    add_library(stockfish_jni SHARED jni/StockfishJni.cpp ${SF_SOURCES})
-    target_include_directories(stockfish_jni PRIVATE ${SF_SRC} ${SF_SRC}/nnue)
-    target_compile_definitions(stockfish_jni PRIVATE
-        USE_PTHREADS NO_PREFETCH USE_NEON)
-    target_compile_options(stockfish_jni PRIVATE -O3 -fexceptions -frtti -march=armv8-a+simd)
-    target_link_libraries(stockfish_jni PRIVATE log)
-endif()
+# NOTE: an in-process JNI variant used to live here (StockfishJni.kt/.cpp,
+# -DENABLE_JNI_ENGINE). Deleted: it was an unwired logging stub, and the
+# subprocess engine is the crash-isolated production path. See git history
+# if the experiment is ever revived.

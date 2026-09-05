@@ -17,6 +17,8 @@
 
     <application
         android:label="ChessPilot"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar">
 

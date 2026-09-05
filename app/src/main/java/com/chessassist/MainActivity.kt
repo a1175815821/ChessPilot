@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private lateinit var speedLabel: TextView
     private lateinit var speedBar: SeekBar
     private lateinit var berserkSwitch: Switch
+    private lateinit var ponderSwitch: Switch
     private lateinit var advancedBox: LinearLayout
     private lateinit var advancedHeader: TextView
     private lateinit var eventsHeader: TextView
@@ -215,6 +216,23 @@ class MainActivity : Activity() {
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
+        ponderSwitch = Switch(this).apply {
+            text = "后台思考"
+            textSize = 15f
+            isChecked = BridgeSettings.ponderEnabled
+            setOnCheckedChangeListener { _, on ->
+                BridgeSettings.ponderEnabled = on
+                BridgeSettings.save(this@MainActivity)
+                // No engine restart: the loop reads the flag live every iteration.
+                try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
+            }
+        }
+        advancedBox.addView(ponderSwitch)
+        advancedBox.addView(TextView(this).apply {
+            text = "对手走棋时也算，中了直接出招。费电发热。"
+            textSize = 12f
+            setTextColor(Color.parseColor("#9E9E9E"))
+        })
         timeLabel = TextView(this).apply { textSize = 14f }
         advancedBox.addView(timeLabel)
         timeBar = SeekBar(this).apply {
@@ -374,6 +392,7 @@ class MainActivity : Activity() {
         BridgeSettings.load(this)
         autoSwitch.isChecked = BridgeSettings.autoPlayEnabled
         berserkSwitch.isChecked = BridgeSettings.berserk
+        ponderSwitch.isChecked = BridgeSettings.ponderEnabled
         timeBar.progress = ((BridgeSettings.movetimeMs / 100).toInt() - 1).coerceIn(0, 29)
         depthBar.progress = BridgeSettings.searchDepth.coerceIn(0, 30)
         speedBar.progress = ((BridgeSettings.autoPlayDelayMs - 150) / 50).toInt().coerceIn(0, 27)

@@ -12,6 +12,7 @@ object BridgeSettings {
     private const val K_MOVETIME = "movetime_ms"
     private const val K_DEPTH = "search_depth"
     private const val K_DELAY = "autoplay_delay_ms"
+    private const val K_PONDER = "ponder"
     private const val K_BERSERK = "berserk"
 
     /** Auto-play Stockfish's move on the real board. Default OFF (ToS/ban risk). */
@@ -40,6 +41,15 @@ object BridgeSettings {
      */
     @Volatile var berserk: Boolean = false
 
+    /**
+     * Ponder (think on the opponent's time): while waiting for the opponent,
+     * search our reply to the engine's predicted move; if they play it, the
+     * answer is instant via ponderhit. Default OFF: it runs the CPU ~100% of
+     * the game (heat/battery) instead of ~50%. No restart needed on toggle —
+     * the loop reads this flag live every iteration.
+     */
+    @Volatile var ponderEnabled: Boolean = false
+
     fun load(context: Context) {
         try {
             val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -48,6 +58,7 @@ object BridgeSettings {
             searchDepth = p.getInt(K_DEPTH, 0).coerceIn(0, 30)
             autoPlayDelayMs = p.getLong(K_DELAY, 450L).coerceIn(150L, 1500L)
             berserk = p.getBoolean(K_BERSERK, false)
+            ponderEnabled = p.getBoolean(K_PONDER, false)
         } catch (_: Throwable) {
         }
     }
@@ -60,13 +71,15 @@ object BridgeSettings {
                 .putInt(K_DEPTH, searchDepth)
                 .putLong(K_DELAY, autoPlayDelayMs)
                 .putBoolean(K_BERSERK, berserk)
+                .putBoolean(K_PONDER, ponderEnabled)
                 .apply()
         } catch (_: Throwable) {
         }
     }
 
     fun describe(): String =
-        if (searchDepth > 0) "固定深度 $searchDepth 层" else "思考时间 ${movetimeMs}ms"
+        (if (searchDepth > 0) "固定深度 $searchDepth 层" else "思考时间 ${movetimeMs}ms") +
+            if (ponderEnabled) " · 后台思考开" else ""
 
     fun modeShort(): String = if (berserk) "狂暴" else "普通"
 

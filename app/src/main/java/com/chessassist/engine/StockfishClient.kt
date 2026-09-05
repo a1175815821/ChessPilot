@@ -26,12 +26,22 @@ class StockfishClient(private val context: Context) {
     companion object {
         private const val TAG = "StockfishClient"
         private const val IDLE_TIMEOUT_MS = 15_000L
+        /** Hard backstop for a ponder read whose stop signal got lost (about never). */
+        private const val PONDER_MAX_MS = 180_000L
     }
 
     private var process: Process? = null
     private var reader: BufferedReader? = null
     private val lock = Any()
     private val running = AtomicBoolean(false)
+
+    /**
+     * Serializes ALL socket writes (search commands, ponderhit, stop, quit).
+     * The ponder flow has two threads (worker signalling, ponder thread
+     * reading) that could otherwise interleave bytes mid-command. Single lock,
+     * always leaf (never held while acquiring [lock]) — no lock ordering risk.
+     */
+    private val writeLock = Any()
 
     @Volatile var loadedNnue: String? = null
         private set
@@ -91,31 +101,50 @@ class StockfishClient(private val context: Context) {
         send("setoption name Threads value $threads")
         send("setoption name Hash value $hashMb")
         send("setoption name MultiPV value 1")
-        loadedNnue = "(embedded nn-b1a57edbea57.nnue)"
+        loadedNnue = "(embedded nn-1a298aa575a0.nnue)"
         send("isready")
         awaitLine("readyok", IDLE_TIMEOUT_MS)
     }
 
-    /** Structural FEN sanity check (6 fields, 8×8 placement, legal tokens). */
+    /**
+     * FEN sanity check: structure (6 fields, 8×8, legal tokens) AND material
+     * counts (exactly one king each, ≤16 men and ≤8 pawns per side, no pawns on
+     * the back ranks). SF 19 terminates the process on invalid input, and a
+     * structurally-valid-but-illegal FEN (e.g. 9 pawns from a test harness typo —
+     * caught live) would otherwise crash-loop through the whole backoff ladder.
+     * Real hook positions are always legal; this is pure defense in depth.
+     */
     private fun isSaneFen(fen: String): Boolean {
         return try {
             val parts = fen.trim().split(Regex("\\s+"))
             if (parts.size != 6) return false
             val rows = parts[0].split('/')
             if (rows.size != 8) return false
-            for (r in rows) {
+            var whiteMen = 0
+            var blackMen = 0
+            var whitePawns = 0
+            var blackPawns = 0
+            var whiteKings = 0
+            var blackKings = 0
+            for ((ri, r) in rows.withIndex()) {
                 var w = 0
                 for (ch in r) {
                     when {
                         ch in '1'..'8' -> w += ch - '0'
-                        ch == 'p' || ch == 'n' || ch == 'b' || ch == 'r' ||
-                            ch == 'q' || ch == 'k' || ch == 'P' || ch == 'N' ||
-                            ch == 'B' || ch == 'R' || ch == 'Q' || ch == 'K' -> w += 1
+                        ch == 'p' -> { w += 1; blackMen++; blackPawns++; if (ri == 0 || ri == 7) return false }
+                        ch == 'n' || ch == 'b' || ch == 'r' || ch == 'q' -> { w += 1; blackMen++ }
+                        ch == 'k' -> { w += 1; blackMen++; blackKings++ }
+                        ch == 'P' -> { w += 1; whiteMen++; whitePawns++; if (ri == 0 || ri == 7) return false }
+                        ch == 'N' || ch == 'B' || ch == 'R' || ch == 'Q' -> { w += 1; whiteMen++ }
+                        ch == 'K' -> { w += 1; whiteMen++; whiteKings++ }
                         else -> return false
                     }
                 }
                 if (w != 8) return false
             }
+            if (whiteKings != 1 || blackKings != 1) return false
+            if (whiteMen > 16 || blackMen > 16) return false
+            if (whitePawns > 8 || blackPawns > 8) return false
             if (parts[1] != "w" && parts[1] != "b") return false
             if (!parts[2].matches(Regex("-|[KQkq]+"))) return false
             if (parts[3] != "-" && !parts[3].matches(Regex("[a-h][36]"))) return false
@@ -233,7 +262,9 @@ class StockfishClient(private val context: Context) {
             process = null
             reader = null
         }
-        try { p?.outputStream?.write("quit\n".toByteArray()); p?.outputStream?.flush() } catch (_: Throwable) {}
+        synchronized(writeLock) {
+            try { p?.outputStream?.write("quit\n".toByteArray()); p?.outputStream?.flush() } catch (_: Throwable) {}
+        }
         try { r?.close() } catch (_: Throwable) {}
         try { p?.destroy() } catch (_: Throwable) {}
     }
@@ -242,8 +273,93 @@ class StockfishClient(private val context: Context) {
         val p: Process?
         synchronized(lock) { p = process }
         val proc = p ?: throw IllegalStateException("engine not running")
-        proc.outputStream.write((cmd + "\n").toByteArray())
-        proc.outputStream.flush()
+        synchronized(writeLock) {
+            proc.outputStream.write((cmd + "\n").toByteArray())
+            proc.outputStream.flush()
+        }
+        // Full-duplex trace: every command logged (commands are rare — a few per
+        // move — while engine `info` output stays untraced). Invaluable when the
+        // engine goes silent: distinguishes "never sent" from "sent, ignored".
+        // `go` lines carry the search shape; positions are truncated (FENs are long).
+        val short = if (cmd.startsWith("position ")) "position " + cmd.takeLast(20) else cmd.take(80)
+        Log.d(TAG, "-> $short")
+    }
+
+    /**
+     * Ponder the predicted opponent reply: search OUR next move from
+     * (fen + ponderMove) until ponderhit/stop. Shares the UCI stream discipline
+     * with analyse(); [stopFlag] is checked on every line so the owner can
+     * abort promptly (it then pushes a readyok through to unblock this read).
+     * No watchdog here — lifetime is stop-driven, bounded by PONDER_MAX_MS.
+     */
+    fun ponder(
+        fen: String, ponderMove: String, movetimeMs: Long, depth: Int,
+        stopFlag: AtomicBoolean
+    ): BestMove? {
+        if (!running.get()) return null
+        val r: BufferedReader?
+        synchronized(lock) { r = reader }
+        if (r == null) return null
+        try {
+            send("position fen $fen moves $ponderMove")
+        } catch (_: Throwable) {
+            return null
+        }
+        try {
+            if (depth > 0) send("go ponder depth $depth") else send("go ponder")
+        } catch (_: Throwable) {
+            return null
+        }
+        var best: BestMove? = null
+        var lastScoreCp: Int? = null
+        var pdepth = 0
+        val deadline = System.currentTimeMillis() + PONDER_MAX_MS
+        try {
+            while (running.get() && !stopFlag.get() && System.currentTimeMillis() < deadline) {
+                val line = try {
+                    r.readLine()
+                } catch (_: Throwable) {
+                    break
+                } ?: break
+                when {
+                    line.startsWith("info depth ") -> {
+                        line.substringAfter("info depth ").substringBefore(' ')
+                            .toIntOrNull()?.let { if (it > pdepth) pdepth = it }
+                        if (line.contains(" score cp ")) {
+                            val cp = line.substringAfter(" score cp ").substringBefore(' ').toIntOrNull()
+                            if (cp != null && line.contains(" pv ")) lastScoreCp = cp
+                        } else if (line.contains(" score mate ")) {
+                            val mate = line.substringAfter(" score mate ").substringBefore(' ').toIntOrNull()
+                            if (mate != null) lastScoreCp = mate * 10000
+                        }
+                    }
+                    line.startsWith("bestmove") -> {
+                        val uci = line.split(' ').getOrNull(1)
+                        val ponder = line.split(" ponder ").getOrNull(1)?.trim()
+                        best = uci?.let { BestMove(it, ponder, lastScoreCp, pdepth) }
+                        break
+                    }
+                }
+            }
+        } finally {
+            try { send("stop") } catch (_: Throwable) {}
+        }
+        return best
+    }
+
+    /** Signal ponderhit: the opponent played our predicted move. Best-effort. */
+    fun signalPonderHit() {
+        try { send("ponderhit") } catch (_: Throwable) {}
+    }
+
+    /**
+     * Abort a ponder read from another thread: stop the search, then push an
+     * isready whose readyok unblocks the reader (a bare stop leaves it parked
+     * on readLine with an idle engine and no output coming).
+     */
+    fun stopPonder() {
+        try { send("stop") } catch (_: Throwable) {}
+        try { send("isready") } catch (_: Throwable) {}
     }
 
     private fun awaitLine(prefix: String, timeoutMs: Long): Boolean {

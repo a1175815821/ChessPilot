@@ -231,17 +231,41 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
         }, 800)
     }
 
-    /** L3 fallback: the historical board-relative queen-cell guess. */
+    /**
+     * L3 fallback: screenshot-pinned queen coordinates.
+     *
+     * Pinned from a live picker screenshot (2026-09-05 lesson, 1080x2460, cell=135):
+     * the panel hangs BELOW the destination square (toward the board center),
+     * queen = leftmost button ≈ destCenter + (-1.65, +1.81) cells (measured:
+     * dest d8 (472,986) device-px, queen (250,1231); pitch ≈ 1.3 cells).
+     * X side is screen-stable (queen renders leftmost regardless of flip); Y side
+     * points at the board center (promotions always land on the far rank, so in
+     * practice the panel is below the destination). Clamped into the view —
+     * edge files (a/h) may shift the panel, in which case the log line below plus
+     * the next screenshot corrects the constants. Replaces the old origin-square
+     * guess, which was proven useless (it just deselected the pawn).
+     */
     private fun boardGuessQueen(view: View, toSquare: String, flipped: Boolean) {
         val file = toSquare[0] - 'a'
         val rank = toSquare[1] - '1'
-        val queenCellRank = if (flipped) rank + 1 else rank - 1
-        if (queenCellRank !in 0..7) {
-            MainHook.log("promotion: queen guess off-board, skipping guess tap ($toSquare)")
+        val cell = minOf(view.width, view.height).toFloat() / 8f
+        if (cell <= 0) {
+            MainHook.log("promotion: L3 no layout yet, skipping ($toSquare)")
             return
         }
-        MainHook.log("promotion: L3 board guess tap (${'a' + file}${queenCellRank + 1})")
-        tapSquareAt(view, file, queenCellRank, flipped)
+        val (dx, dy) = squareToScreen(view, file, rank, flipped)
+        val ySign = if (dy <= view.height / 2f) 1f else -1f
+        val qx = dx - 1.65f * cell
+        val qy = dy + ySign * 1.81f * cell
+        val cx = qx.coerceIn(cell * 0.4f, view.width - cell * 0.4f)
+        val cy = qy.coerceIn(cell * 0.4f, view.height - cell * 0.4f)
+        MainHook.log(
+            "promotion: L3 pinned queen dest=$toSquare flip=$flipped " +
+                "cell=${cell.toInt()} d=(${dx.toInt()},${dy.toInt()}) " +
+                "q=(${cx.toInt()},${cy.toInt()})" +
+                (if (cx != qx || cy != qy) " CLAMPED" else "")
+        )
+        tapViewAt(view, cx, cy, "promo-queen-pin")
     }
 
     /**

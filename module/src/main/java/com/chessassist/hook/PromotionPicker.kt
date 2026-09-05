@@ -158,6 +158,26 @@ object PromotionPicker {
                 for (c in added.take(8)) MainHook.log("promotion: + ${fmt(c)}")
             }
 
+            // ---- L1b: user-confirmed layout — horizontal row of 2-6 similar cells
+            // (Q R B N left-to-right, queen leftmost), matched on the diff set so
+            // random dialogs can never trigger it. Text match stays first because
+            // it is unambiguous when descriptions exist.
+            if (preKeys.isNotEmpty()) {
+                val added = post.filter { keyOf(it) !in preKeys }
+                val rowQueen = leftmostOfRow(
+                    added.filter { it.r > it.l + 20 && it.b > it.t + 20 }
+                        .map { Cell(it.l, it.t, it.r, it.b) to it },
+                    decor.width, decor.height
+                )
+                if (rowQueen != null) {
+                    MainHook.log("promotion: L1b row queen (leftmost of ${added.size} added): ${fmt(rowQueen)}")
+                    tapViewButton(rowQueen, tapAt, "promo-row")
+                    return true
+                } else {
+                    MainHook.log("promotion: L1b no row among ${added.size} added")
+                }
+            }
+
             // ---- L1: plain-View queen button (any window: tap the view / its root).
             val l1 = post.mapNotNull { c ->
                 val hit = queenHit(c.desc, c.text) ?: return@mapNotNull null
@@ -213,8 +233,9 @@ object PromotionPicker {
                         "root=${r?.javaClass?.name?.substringAfterLast('.')}"
                 )
             }
-            // L2 in dry-run: log nodes, invoke nothing.
-            scanComposeNodes(boardView, dryRun = true) { _, _, _, _, _ -> }
+            // L2 walk is log-only here (no taps): validates the reflection chain
+            // and reveals the live semantics structure.
+            collectComposeClicks(boardView)
         } catch (t: Throwable) {
             MainHook.log("promoscan failed: ${t.message?.take(140)}")
         }
@@ -222,37 +243,142 @@ object PromotionPicker {
 
     // ------------------------------------------------------------ L2: Compose -----
 
-    /** Returns true when a queen semantics node was found (and clicked, unless dryRun). */
+    /** Returns true when a queen semantics node was found and tapped. */
     private fun scanCompose(
         boardView: View,
         tapAt: (View, Float, Float, String) -> Unit
     ): Boolean {
-        var tapped = false
-        scanComposeNodes(boardView, dryRun = false) { host, root, cxW, cyW, invoke ->
+        val clicks = collectComposeClicks(boardView)
+        // L2 text match first (unambiguous).
+        for (c in clicks) {
+            if (queenHit(c.desc, c.tag) != null) {
+                MainHook.log("promotion: L2 queen hit desc=[${c.desc}] tag=[${c.tag}]")
+                tapComposeButton(c, tapAt, "promo-compose")
+                return true
+            }
+        }
+        // L2b row fallback: leftmost of a same-band clickable cluster.
+        val decor = decorOf(boardView)
+        val rowQueen = leftmostOfRow(
+            clicks.map { Cell(it.l, it.t, it.r, it.b) to it },
+            decor?.width ?: 1080, decor?.height ?: 2400
+        )
+        if (rowQueen != null) {
+            MainHook.log(
+                "promotion: L2b row queen desc=[${rowQueen.desc}] tag=[${rowQueen.tag}] " +
+                    "bounds=[${rowQueen.l},${rowQueen.t}-${rowQueen.r},${rowQueen.b}]"
+            )
+            tapComposeButton(rowQueen, tapAt, "promo-composerow")
+            return true
+        }
+        MainHook.log("promotion: L2 no hit among ${clicks.size} clickable semantics nodes")
+        return false
+    }
+
+    private fun tapComposeButton(
+        c: ComposeClick,
+        tapAt: (View, Float, Float, String) -> Unit,
+        label: String
+    ) {
+        if (c.invoke != null) {
             try {
-                val ok = invoke()
-                MainHook.log("promotion: L2 OnClick invoke -> $ok")
+                val ok = c.invoke()
+                MainHook.log("promotion: L2 action invoke -> $ok")
             } catch (t: Throwable) {
                 MainHook.log("promotion: L2 invoke threw: ${t.message?.take(100)}")
             }
-            try {
-                val rw = IntArray(2)
-                root.getLocationInWindow(rw)
-                tapAt(root, cxW - rw[0], cyW - rw[1], "promo-compose")
-                tapped = true
-            } catch (t: Throwable) {
-                MainHook.log("promotion: L2 coord tap threw: ${t.message?.take(100)}")
-            }
+        } else {
+            MainHook.log("promotion: L2 no unambiguous action, coord tap only")
         }
-        return tapped
+        try {
+            val rw = IntArray(2)
+            c.root.getLocationInWindow(rw)
+            tapAt(c.root, c.cxW - rw[0], c.cyW - rw[1], label)
+        } catch (t: Throwable) {
+            MainHook.log("promotion: L2 coord tap threw: ${t.message?.take(100)}")
+        }
     }
 
-    private fun scanComposeNodes(
-        boardView: View,
-        dryRun: Boolean,
-        onQueen: (host: View, root: View, cxW: Float, cyW: Float, invoke: () -> Boolean) -> Unit
+    private fun tapViewButton(
+        c: Cand,
+        tapAt: (View, Float, Float, String) -> Unit,
+        label: String
     ) {
-        val decor = decorOf(boardView) ?: return
+        try {
+            val pc = c.view.performClick()
+            MainHook.log("promotion: $label performClick -> $pc")
+        } catch (t: Throwable) {
+            MainHook.log("promotion: $label performClick threw: ${t.message?.take(100)}")
+        }
+        try {
+            val root = c.view.rootView ?: c.view
+            val rl = IntArray(2)
+            root.getLocationOnScreen(rl)
+            tapAt(root, (c.l + c.r) / 2f - rl[0], (c.t + c.b) / 2f - rl[1], label)
+        } catch (t: Throwable) {
+            MainHook.log("promotion: $label coord tap threw: ${t.message?.take(100)}")
+        }
+    }
+
+    /** Horizontal picker-row test: 2-6 similar cells in one band → leftmost (queen). */
+    private data class Cell(val l: Int, val t: Int, val r: Int, val b: Int)
+
+    private fun <T> leftmostOfRow(
+        cells: List<Pair<Cell, T>>,
+        refW: Int, refH: Int
+    ): T? {
+        if (cells.size !in 2..6) return null
+        val refArea = (refW.coerceAtLeast(1) * refH.coerceAtLeast(1)).toLong()
+        val sane = cells.filter { (c, _) ->
+            val w = c.r - c.l
+            val h = c.b - c.t
+            w > 0 && h > 0 &&
+                w.toLong() * h in (refArea / 1000)..(refArea / 4) &&
+                maxOf(w, h) <= 3 * minOf(w, h)
+        }
+        if (sane.size !in 2..6) return null
+        val hs = sane.map { it.first.b - it.first.t }
+        if (hs.maxOrNull()!! > hs.minOrNull()!! * 2) return null
+        val cys = sane.map { (it.first.t + it.first.b) / 2 }
+        val tol = maxOf(refH / 20, 40)
+        if (cys.maxOrNull()!! - cys.minOrNull()!! > tol) return null
+        val span = sane.maxOf { it.first.r } - sane.minOf { it.first.l }
+        if (span < 2 * sane.maxOf { it.first.r - it.first.l }) return null
+        return sane.minByOrNull { it.first.l }?.second
+    }
+
+    data class ComposeClick(
+        val host: View, val root: View,
+        val cxW: Float, val cyW: Float,
+        val l: Int, val t: Int, val r: Int, val b: Int,
+        val desc: String, val tag: String,
+        /** Direct action runner; null when ambiguous — caller coord-taps instead. */
+        val invoke: (() -> Boolean)?
+    )
+
+    /** Classes whose method inventory was already logged (always used on UI thread). */
+    private val inventoried = mutableSetOf<String>()
+
+    private fun logMethodsOnce(clz: Class<*>, tag: String) {
+        if (!inventoried.add(clz.name)) return
+        try {
+            val sigs = clz.declaredMethods
+                .filter { !it.isSynthetic }
+                .map { "${it.name}:${it.returnType.name.substringAfterLast('.')}" }
+                .sorted().joinToString(" ").take(600)
+            MainHook.log("promotion: L2s $tag ${clz.name} methods=[$sigs]")
+        } catch (_: Throwable) {
+            MainHook.log("promotion: L2s inventory failed for ${clz.name}")
+        }
+    }
+
+    /**
+     * Walk every AndroidComposeView's semantics tree, logging nodes with
+     * descriptions/tags/click actions, and return all clickable nodes with
+     * window bounds. Pure reflection (no compose imports): library class names
+     * are kept, so app obfuscation does not matter. Never throws.
+     */
+    private fun collectHosts(decor: View): List<View> {
         val hosts = mutableListOf<View>()
         fun collect(v: View, depth: Int) {
             if (hosts.size >= 16 || depth > 40) return
@@ -266,13 +392,19 @@ object PromotionPicker {
         }
         try { collect(decor, 0) } catch (t: Throwable) {
             MainHook.log("promotion: compose host collect failed: ${t.message?.take(100)}")
-            return
         }
+        return hosts
+    }
+
+    private fun collectComposeClicks(boardView: View): List<ComposeClick> {
+        val out = mutableListOf<ComposeClick>()
+        val decor = decorOf(boardView) ?: return out
+        val hosts = collectHosts(decor)
         if (hosts.isEmpty()) {
             MainHook.log("promotion: L2 no AndroidComposeView found")
-            return
+            return out
         }
-        val loader = boardView.javaClass.classLoader ?: return
+        val loader = boardView.javaClass.classLoader ?: return out
         val cdKey = composeObjectProp(loader, "androidx.compose.ui.semantics.SemanticsProperties", "ContentDescription")
         val tagKey = composeObjectProp(loader, "androidx.compose.ui.semantics.SemanticsProperties", "TestTag")
         val clickKey = composeObjectProp(loader, "androidx.compose.ui.semantics.SemanticsActions", "OnClick")
@@ -318,11 +450,15 @@ object PromotionPicker {
                                 )
                             }
                         }
-                        if (!dryRun && bounds != null && clickFn != null &&
-                            queenHit(desc, tag) != null
-                        ) {
-                            MainHook.log("promotion: L2 queen hit desc=[$desc] tag=[$tag]")
-                            onQueen(host, root, bounds.exactCenterX(), bounds.exactCenterY(), clickFn)
+                        if (bounds != null && clickFn != null) {
+                            out.add(
+                                ComposeClick(
+                                    host, root,
+                                    bounds.exactCenterX(), bounds.exactCenterY(),
+                                    bounds.left, bounds.top, bounds.right, bounds.bottom,
+                                    desc, tag, clickFn
+                                )
+                            )
                         }
                         @Suppress("UNCHECKED_CAST")
                         val kids = try {
@@ -336,7 +472,227 @@ object PromotionPicker {
                 MainHook.log("promotion: L2 owner walk failed: ${t.message?.take(120)}")
             }
         }
-        MainHook.log("promotion: L2 walked nodes=$nodeCount logged=$logged")
+        MainHook.log("promotion: L2 walked nodes=$nodeCount logged=$logged clickable=${out.size}")
+        // Shape-based pass: R8 renames compose semantics classes/members (live: owner
+        // `uzt`, no getUnmergedRootSemanticsNode), so the name-based pass above finds
+        // nothing. Match by JVM shapes instead — framework return types survive R8.
+        for (c in collectComposeClicksByShape(boardView)) {
+            if (out.none { it.l == c.l && it.t == c.t && it.r == c.r && it.b == c.b }) out.add(c)
+        }
+        return out
+    }
+
+    // ------------------------------------------------- L2 shape-based pass -----
+
+    private fun noArgMethods(o: Any): List<java.lang.reflect.Method> {
+        return try {
+            o.javaClass.methods.filter { it.parameterTypes.isEmpty() }
+        } catch (_: Throwable) { emptyList() }
+    }
+
+    private fun kidsOfShape(node: Any): List<Any> {
+        val acc = ArrayList<Any>()
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>())
+        for (m in noArgMethods(node)) {
+            if (m.returnType != java.util.List::class.java) continue
+            try {
+                val v = m.invoke(node) as? List<*> ?: continue
+                for (e in v) if (e != null && seen.add(e)) acc.add(e)
+            } catch (_: Throwable) { }
+        }
+        return acc
+    }
+
+    private fun rectOfShape(node: Any): Rect? {
+        for (m in noArgMethods(node)) {
+            if (m.returnType != Rect::class.java) continue
+            try {
+                val r = m.invoke(node) as? Rect
+                if (r != null) return r
+            } catch (_: Throwable) { }
+        }
+        return null
+    }
+
+    /**
+     * The node's attached config object (SemanticsConfiguration shape): a nontrivial
+     * object value. When several qualify, prefer one exposing a string list
+     * (contentDescription shape), else one exposing any list, else the first.
+     */
+    private fun configOfShape(node: Any): Any? {
+        val cands = mutableListOf<Any>()
+        for (m in noArgMethods(node)) {
+            val rt = m.returnType
+            if (rt.isPrimitive || rt == Void.TYPE || rt == String::class.java ||
+                Number::class.java.isAssignableFrom(rt) ||
+                java.lang.Boolean::class.java.isAssignableFrom(rt) ||
+                java.util.List::class.java.isAssignableFrom(rt) || rt == Rect::class.java ||
+                rt == node.javaClass || rt.name == "java.lang.Class" ||
+                rt.name == "java.lang.Object"
+            ) continue
+            try {
+                val v = m.invoke(node)
+                if (v != null && cands.size < 5) cands.add(v)
+            } catch (_: Throwable) { }
+        }
+        for (c in cands) logMethodsOnce(c.javaClass, "config?")
+        return cands.firstOrNull { stringListOf(it).isNotEmpty() }
+            ?: cands.firstOrNull { hasListMethod(it) }
+            ?: cands.firstOrNull()
+    }
+
+    private fun hasListMethod(o: Any): Boolean =
+        noArgMethods(o).any { it.returnType == java.util.List::class.java }
+
+    private fun stringListOf(cfg: Any): String {
+        for (m in noArgMethods(cfg)) {
+            if (m.returnType != java.util.List::class.java) continue
+            try {
+                val v = m.invoke(cfg) as? List<*> ?: continue
+                if (v.isNotEmpty() && v.all { it is String }) {
+                    return v.filterIsInstance<String>().joinToString("|").take(120)
+                }
+            } catch (_: Throwable) { }
+        }
+        return ""
+    }
+
+    /** All Function0-valued members (click-action shape). Invoke is gated by count. */
+    private fun actionFnsOf(cfg: Any): List<() -> Boolean> {
+        val fns = mutableListOf<() -> Boolean>()
+        for (m in noArgMethods(cfg)) {
+            val rt = m.returnType
+            if (rt.isPrimitive || rt == Void.TYPE || rt == String::class.java ||
+                Number::class.java.isAssignableFrom(rt) ||
+                java.lang.Boolean::class.java.isAssignableFrom(rt) ||
+                java.util.List::class.java.isAssignableFrom(rt) ||
+                java.util.Map::class.java.isAssignableFrom(rt) ||
+                rt.name == "java.lang.Class"
+            ) continue
+            try {
+                val obj = m.invoke(cfg) ?: continue
+                val fn = fnOf(obj) ?: continue
+                fns.add { try { fn.invoke() == true } catch (_: Throwable) { false } }
+            } catch (_: Throwable) { }
+        }
+        return fns
+    }
+
+    private fun fnOf(obj: Any): Function0<Boolean>? {
+        try {
+            for (m in obj.javaClass.methods) {
+                if (m.parameterTypes.isNotEmpty()) continue
+                if (m.name == "getAction" ||
+                    (m.name.startsWith("get") &&
+                        Function0::class.java.isAssignableFrom(m.returnType))
+                ) {
+                    @Suppress("UNCHECKED_CAST")
+                    val fn = try { m.invoke(obj) as? Function0<Boolean> } catch (_: Throwable) { null }
+                    if (fn != null) return fn
+                }
+            }
+            for (f in obj.javaClass.declaredFields) {
+                if (!Function0::class.java.isAssignableFrom(f.type)) continue
+                try { f.isAccessible = true } catch (_: Throwable) { }
+                @Suppress("UNCHECKED_CAST")
+                val fn = try { f.get(obj) as? Function0<Boolean> } catch (_: Throwable) { null }
+                if (fn != null) return fn
+            }
+        } catch (_: Throwable) { }
+        return null
+    }
+
+    private fun findRootNodeShape(owner: Any): Any? {
+        logMethodsOnce(owner.javaClass, "owner")
+        val cands = mutableListOf<Any>()
+        for (m in noArgMethods(owner)) {
+            val rt = m.returnType
+            if (rt.isPrimitive || rt == Void.TYPE || rt == String::class.java ||
+                Number::class.java.isAssignableFrom(rt) ||
+                java.lang.Boolean::class.java.isAssignableFrom(rt) ||
+                rt.name == "java.lang.Class"
+            ) continue
+            try {
+                val v = m.invoke(owner)
+                if (v != null) cands.add(v)
+            } catch (_: Throwable) { }
+        }
+        // SemanticsNode shape: exposes window bounds (Rect) + children (List).
+        for (c in cands) {
+            val ms = noArgMethods(c)
+            if (ms.any { it.returnType == Rect::class.java } &&
+                ms.any { it.returnType == java.util.List::class.java }
+            ) {
+                logMethodsOnce(c.javaClass, "node")
+                return c
+            }
+        }
+        return null
+    }
+
+    private fun collectComposeClicksByShape(boardView: View): List<ComposeClick> {
+        val out = mutableListOf<ComposeClick>()
+        val decor = decorOf(boardView) ?: return out
+        val hosts = collectHosts(decor)
+        if (hosts.isEmpty()) return out
+        for (host in hosts) {
+            try {
+                val owner = try {
+                    host.javaClass.getMethod("getSemanticsOwner").invoke(host)
+                } catch (_: Throwable) { null } ?: continue
+                val rootNode = findRootNodeShape(owner)
+                if (rootNode == null) {
+                    MainHook.log("promotion: L2s no root shape on ${owner.javaClass.name}")
+                    continue
+                }
+                val root = host.rootView ?: host
+                var n = 0
+                var logged = 0
+                fun dfs(node: Any, depth: Int) {
+                    if (n >= 800 || depth > 30 || out.size >= 200) return
+                    n++
+                    try {
+                        val bounds = rectOfShape(node)
+                        val cfg = configOfShape(node)
+                        var desc = ""
+                        var invoke: (() -> Boolean)? = null
+                        var actions = 0
+                        if (cfg != null) {
+                            desc = stringListOf(cfg)
+                            val fns = actionFnsOf(cfg)
+                            actions = fns.size
+                            // Invoke only an UNAMBIGUOUS single action: it is the
+                            // node's own click (finger-equivalent). Ambiguous
+                            // multi-action nodes are coord-tapped, never invoked.
+                            if (fns.size == 1) invoke = fns[0]
+                        }
+                        if (bounds != null && (desc.isNotEmpty() || actions > 0)) {
+                            if (desc.isNotEmpty() && logged < 20) {
+                                logged++
+                                MainHook.log(
+                                    "promotion: L2s node desc=[$desc] actions=$actions " +
+                                        "bounds=[${bounds.left},${bounds.top}-${bounds.right},${bounds.bottom}]"
+                                )
+                            }
+                            out.add(
+                                ComposeClick(
+                                    host, root,
+                                    bounds.exactCenterX(), bounds.exactCenterY(),
+                                    bounds.left, bounds.top, bounds.right, bounds.bottom,
+                                    desc, "", invoke
+                                )
+                            )
+                        }
+                        for (kid in kidsOfShape(node)) dfs(kid, depth + 1)
+                    } catch (_: Throwable) { }
+                }
+                dfs(rootNode, 0)
+                MainHook.log("promotion: L2s host nodes=$n clickable=${out.size}")
+            } catch (t: Throwable) {
+                MainHook.log("promotion: L2s host failed: ${t.message?.take(120)}")
+            }
+        }
+        return out
     }
 
     private fun composeObjectProp(loader: ClassLoader, className: String, prop: String): Any? {

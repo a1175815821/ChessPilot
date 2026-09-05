@@ -723,6 +723,84 @@ object PromotionPicker {
         return roots.ifEmpty { listOfNotNull(decorOf(boardView)) }
     }
 
+    /**
+     * Deep sample v3: the obfuscated tree (`rzt`) exposes children only through
+     * ARG-TAKING List methods (`i(boolean,boolean)`, `p(ArrayList,boolean)`) and
+     * bounds through unknown nested objects — both invisible to the no-arg shape
+     * walk. So probe them directly: try all boolean combos, inventory every
+     * no-arg object getter's class, scalar-sample everything. The output pins the
+     * exact accessor path for the real walker. Runs per host per scan (rare).
+     */
+    private fun deepSampleRoot(owner: Any) {
+        try {
+            val root = try {
+                owner.javaClass.methods.firstOrNull {
+                    it.name == "a" && it.parameterTypes.isEmpty()
+                }?.invoke(owner)
+            } catch (_: Throwable) { null } ?: return
+            logMethodsOnce(root.javaClass, "deeproot")
+            sampleScalars(root, "deeproot")
+            for (m in noArgMethods(root)) {
+                val rt = m.returnType
+                if (rt.isPrimitive || rt == Void.TYPE || rt == String::class.java ||
+                    Number::class.java.isAssignableFrom(rt) ||
+                    java.lang.Boolean::class.java.isAssignableFrom(rt) ||
+                    java.util.List::class.java.isAssignableFrom(rt) ||
+                    rt.name == "java.lang.Class"
+                ) continue
+                try {
+                    val v = m.invoke(root) ?: continue
+                    logMethodsOnce(v.javaClass, "deepobj:${m.name}")
+                    sampleScalars(v, "deepobj:${m.name}")
+                    for (lm in noArgMethods(v)) {
+                        if (lm.returnType != java.util.List::class.java) continue
+                        try {
+                            val lst = lm.invoke(v) as? List<*> ?: continue
+                            val el = lst.firstOrNull()
+                            MainHook.log(
+                                "promotion: L2s deepobj ${m.name}.${lm.name} " +
+                                    "size=${lst.size} el=${el?.javaClass?.name}"
+                            )
+                            if (el != null) {
+                                logMethodsOnce(el.javaClass, "deepel")
+                                sampleScalars(el, "deepel")
+                            }
+                        } catch (_: Throwable) { }
+                    }
+                } catch (_: Throwable) { }
+            }
+            for (m in root.javaClass.methods) {
+                if (m.returnType != java.util.List::class.java) continue
+                val pt = m.parameterTypes
+                fun probe(args: Array<Any?>) {
+                    try {
+                        val lst = m.invoke(root, *args) as? List<*> ?: return
+                        val el = lst.firstOrNull()
+                        MainHook.log(
+                            "promotion: L2s deepcall ${m.name}(${args.joinToString(",")}) " +
+                                "size=${lst.size} el=${el?.javaClass?.name}"
+                        )
+                        if (el != null) {
+                            logMethodsOnce(el.javaClass, "deepel")
+                            sampleScalars(el, "deepel")
+                        }
+                    } catch (t: Throwable) {
+                        MainHook.log("promotion: L2s deepcall ${m.name} threw ${t.message?.take(60)}")
+                    }
+                }
+                if (pt.size == 2 && pt[0] == java.lang.Boolean.TYPE && pt[1] == java.lang.Boolean.TYPE) {
+                    for (a in listOf(false, true)) for (b in listOf(false, true)) probe(arrayOf(a, b))
+                } else if (pt.size == 2 && java.util.ArrayList::class.java.isAssignableFrom(pt[0]) &&
+                    pt[1] == java.lang.Boolean.TYPE
+                ) {
+                    for (b in listOf(false, true)) probe(arrayOf(java.util.ArrayList<Any>(), b))
+                }
+            }
+        } catch (t: Throwable) {
+            MainHook.log("promotion: L2s deep sample failed: ${t.message?.take(120)}")
+        }
+    }
+
     private fun collectComposeClicksByShape(boardView: View): List<ComposeClick> {
         val out = mutableListOf<ComposeClick>()
         val hosts = collectHosts(allRoots(boardView))
@@ -732,6 +810,10 @@ object PromotionPicker {
                 val owner = try {
                     host.javaClass.getMethod("getSemanticsOwner").invoke(host)
                 } catch (_: Throwable) { null } ?: continue
+                // Deep sample first: the tree exposes children only through
+                // arg-taking List methods, so the shape walk below cannot reach it
+                // yet — this output pins the exact accessor path for the walker.
+                deepSampleRoot(owner)
                 val rootNode = findRootNodeShape(owner)
                 if (rootNode == null) {
                     MainHook.log("promotion: L2s no root shape on ${owner.javaClass.name}")

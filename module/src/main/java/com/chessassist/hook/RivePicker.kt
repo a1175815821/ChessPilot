@@ -134,19 +134,31 @@ object RivePicker {
     // ------------------------------------------------------------ probe -----
 
     /**
-     * SMI input name WITHOUT calling anything: read the `name` backing field up
-     * the hierarchy. Field reads cannot re-enter method hooks by construction.
+     * SMI input name, three layers, none of which can recurse into hooks:
+     *  1. `getName()` method call — safe because ONLY set/fire entry points are
+     *     hooked now (the ANR came from hooked getters; none remain hooked).
+     *  2. `name` backing-field read up the hierarchy — field reads cannot
+     *     re-enter method hooks by construction (kept as fallback because R8
+     *     may rename either the method or the field, but rarely both).
+     *  3. Class simple name (better than "?").
      */
     private fun smiFieldName(o: Any?): String {
         if (o == null) return "?"
+        try {
+            try {
+                val nm = o.javaClass.getMethod("getName").invoke(o) as? String
+                if (!nm.isNullOrEmpty()) return nm.take(48)
+            } catch (_: Throwable) { }
+        } catch (_: Throwable) { }
         return try {
             var c: Class<*>? = o.javaClass
             while (c != null && c != Any::class.java && c.name.startsWith("app.rive.")) {
                 try {
-                    val f = c.getDeclaredField("name")
-                    if (f.type == String::class.java) {
+                    for (f in c.declaredFields) {
+                        if (f.type != String::class.java) continue
                         try { f.isAccessible = true } catch (_: Throwable) { }
-                        return (f.get(o) as? String)?.take(48) ?: continue
+                        val v = f.get(o) as? String
+                        if (!v.isNullOrEmpty() && v.length <= 64) return v
                     }
                 } catch (_: Throwable) { }
                 c = c.superclass

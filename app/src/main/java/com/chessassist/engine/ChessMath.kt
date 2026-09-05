@@ -14,6 +14,30 @@ object ChessMath {
 
     private const val K = 0.00368208
 
+    /** Traffic-light colors for win rates (ARGB). */
+    const val C_WIN = 0xFF69F0AE.toInt()
+    const val C_MID = 0xFFFFD740.toInt()
+    const val C_LOSE = 0xFFFF8A65.toInt()
+    const val C_DIM = 0xFFBDBDBD.toInt()
+
+    /** Raw user-perspective win probability in [0,1], or null when unscorable. */
+    fun userWinRate01(scoreCp: Int?, sideToMove: String?, userColor: String?): Double? {
+        val stm = sideToMove?.lowercase()
+        val user = userColor?.lowercase()
+        val p = if (user == "w" || user == "b") user else stm
+        if (p != "w" && p != "b") return null
+        val white = whiteWinRate(scoreCp, stm) ?: return null
+        return if (p == "w") white else 1.0 - white
+    }
+
+    /** Color for a user-perspective win rate (gray when unknown). */
+    fun winRateColor(v: Double?): Int = when {
+        v == null -> C_DIM
+        v >= 0.6 -> C_WIN
+        v >= 0.4 -> C_MID
+        else -> C_LOSE
+    }
+
     /** White win probability in [0,1] from a side-to-move score and mover ("w"|"b"|null). */
     fun whiteWinRate(scoreCp: Int?, sideToMove: String?): Double? {
         if (scoreCp == null) return null
@@ -41,8 +65,7 @@ object ChessMath {
         val user = userColor?.lowercase()
         val p = if (user == "w" || user == "b") user else stm
         if (p != "w" && p != "b") return "胜率-"
-        val white = whiteWinRate(scoreCp, stm) ?: return "胜率-"
-        val mine = if (p == "w") white else 1.0 - white
+        val mine = userWinRate01(scoreCp, stm, user) ?: return "胜率-"
         val who = if (user == "w" || user == "b") "我方" else if (p == "w") "白" else "黑"
         val mate = mateIn(scoreCp)
         if (mate != null) {

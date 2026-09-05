@@ -241,6 +241,93 @@ object EngineLoop {
         }
     }
 
+    /** Structured status for the control screen (single source of truth). */
+    data class StatusSnapshot(
+        val engineLabel: String,
+        val engineColor: Int,
+        val hookLine: String,
+        val nnue: String,
+        val fen: String,
+        val bestMove: String?,
+        val bestAgo: String,
+        val winText: String,
+        val winRate01: Double?,
+        val settingsLine: String,
+        val autoLine: String,
+        val heartbeatAgo: String,
+        val staleMinOrNull: Long?,
+        val oursTurnWaiting: Boolean,
+        val error: String?,
+    )
+
+    fun snapshot(): StatusSnapshot {
+        val c = client
+        val hookState = when {
+            BridgeServer.hookConnected() -> "已连接（socket 在线）"
+            lastPositionAt > 0 -> "已连接（${ago(lastPositionAt)}收到局面）"
+            else -> "未连接（LSPosed 模块未上报局面）"
+        }
+        val engineLabel = when (engineState) {
+            STATE_RUNNING -> "运行中"
+            STATE_STARTING -> "启动中…"
+            STATE_FAILED -> "启动失败"
+            else -> "已停止"
+        }
+        val engineColor = when (engineState) {
+            STATE_RUNNING -> ChessMath.C_WIN
+            STATE_STARTING -> ChessMath.C_MID
+            STATE_FAILED -> ChessMath.C_LOSE
+            else -> ChessMath.C_DIM
+        }
+        return StatusSnapshot(
+            engineLabel = engineLabel,
+            engineColor = engineColor,
+            hookLine = hookState,
+            nnue = c?.loadedNnue ?: "-",
+            fen = currentFen ?: "-",
+            bestMove = lastBestMove,
+            bestAgo = if (lastBestMove != null) ago(lastBestMoveAt) else "",
+            winText = if (lastBestMove != null) {
+                ChessMath.formatWinRate(lastScoreCp, lastScoreStm, lastScoreUser)
+            } else "",
+            winRate01 = if (lastBestMove != null) {
+                ChessMath.userWinRate01(lastScoreCp, lastScoreStm, lastScoreUser)
+            } else null,
+            settingsLine = BridgeSettings.describe(),
+            autoLine = if (BridgeSettings.autoPlayEnabled) {
+                "开（${BridgeSettings.autoPlayDelayMs}ms）"
+            } else "关",
+            heartbeatAgo = ago(lastLoopAt),
+            staleMinOrNull = staleMinutes().let { if (it >= 0) it else null },
+            oursTurnWaiting = (staleMinutes() >= 0) &&
+                lastTurnColor != null && lastTurnColor == lastUserColor,
+            error = lastError,
+        )
+    }
+
+    /** Last (move, fen) pair pushed to the hook — the only pair play may replay. */
+    @Volatile private var lastPushedMove: String? = null
+    @Volatile private var lastPushedFen: String? = null
+
+    /** Mirror of the loop-local lastAnalysedFen for cross-thread freshness checks. */
+    @Volatile private var analysedFen: String? = null
+        private set
+
+    /**
+     * Semi-auto entry: play the latest pushed bestmove on user tap (banner button).
+     * Same freshness rules as autoplay — never plays a stale move.
+     */
+    fun playPendingBestmove() {
+        val m = lastPushedMove
+        val f = lastPushedFen
+        if (m == null || f == null || f != analysedFen) {
+            note("点走棋：当前无可走招法")
+            return
+        }
+        BridgeServer.pushPlay(m, f, BridgeSettings.autoPlayDelayMs)
+        note("手动走棋已发送：$m")
+    }
+
     fun statusText(): String {
         val c = client
         val hookState = when {
@@ -338,6 +425,7 @@ object EngineLoop {
                 // Only analyse when it's the user's move (their decision is what we assist).
                 if (!userIsToMove && user != null) {
                     lastAnalysedFen = fen
+                    analysedFen = fen
                     OverlayManager.clear("等待对手走棋…", lastConclusionLine())
                     continue
                 }
@@ -347,6 +435,9 @@ object EngineLoop {
                 lastLoopAt = System.currentTimeMillis()
                 if (best != null) {
                     lastAnalysedFen = fen
+                    analysedFen = fen
+                    lastPushedMove = best.uci
+                    lastPushedFen = fen
                     lastBestMove = best.uci
                     lastBestMoveAt = System.currentTimeMillis()
                     lastScoreCp = best.scoreCp

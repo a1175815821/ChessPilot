@@ -25,6 +25,7 @@ class AssistService : LifecycleService() {
         startForeground(Notify.NOTIF_ID, notification)
         BridgeServer.start()
         EngineLoop.start(applicationContext)
+        OverlayManager.onPlay = { EngineLoop.playPendingBestmove() }
         OverlayManager.init(this)
     }
 
@@ -41,6 +42,7 @@ class AssistService : LifecycleService() {
     override fun onDestroy() {
         EngineLoop.stop()
         BridgeServer.stop()
+        OverlayManager.onPlay = null
         OverlayManager.release()
         super.onDestroy()
     }

@@ -2,36 +2,58 @@ package com.chessassist
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
+import com.chessassist.engine.ChessMath
 
 /**
- * Companion-side overlay fallback — now a persistent status banner.
+ * Companion-side overlay: persistent dark status banner (top center by default).
  *
- * The banner is added once (when the service starts) and never hidden while the
- * service lives; every engine state transition rewrites its two lines:
- *
- *   手动己方回合 : 等待走棋中… / 正在计算…      → 推荐：e2e4 / 白胜率62%
- *   自动己方回合 : 自动走棋中… / 正在计算…      → 自动走棋中：e2e4 / 白胜率62%
- *   对方回合     : 等待对手走棋… / （上步结论）
+ * Layout (horizontal): [spinner | title+winrate column | play button].
+ * - Container: dark translucent rounded rect, draggable (position persisted).
+ * - Win-rate line recolors live (green/yellow/red).
+ * - Play button is the ONLY tap target (banner body never consumes taps):
+ *   enabled + "走棋" in manual mode with a fresh bestmove, disabled + "自动"
+ *   in auto mode, disabled otherwise. Tapping it plays via EngineLoop.
+ * - Spinner shows while auto mode is actively working a position.
  *
  * NOTE: the companion cannot see Duolingo's pixels (no MediaProjection in this design —
  * that's deliberate: no screenshots as primary or fallback). Without board coordinates
  * this overlay can only show text, never arrows.
  *
  * The *precise* arrow is drawn by the hook process (ArrowPainter via cl5.s(...)), which
- * has the live Rive view. This banner keeps the user informed when even that fails.
+ * has the live Rive view.
  */
 object OverlayManager {
 
     private val main = Handler(Looper.getMainLooper())
     private var wm: WindowManager? = null
-    private var view: TextView? = null
+    private var lp: WindowManager.LayoutParams? = null
+    private var root: LinearLayout? = null
+    private var titleTv: TextView? = null
+    private var detailTv: TextView? = null
+    private var playBtn: Button? = null
+    private var spinner: TextView? = null
+    private var spinFrame = 0
     private var added = false
     @Volatile private var initScheduled = false
+
+    private const val PREFS = "chessassist"
+    private const val K_OX = "overlay_x"
+    private const val K_OY = "overlay_y"
+    private const val NO_POS = -100000
+
+    /** Called when the user taps the play button (wired by AssistService). */
+    var onPlay: (() -> Unit)? = null
 
     fun init(context: Context) {
         if (added || initScheduled) return
@@ -39,24 +61,93 @@ object OverlayManager {
         val appContext = context.applicationContext
         main.post {
             try {
+                val density = appContext.resources.displayMetrics.density
+                fun dp(v: Int): Int = (v * density).toInt()
+
                 wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                val tv = TextView(appContext).apply {
-                    text = "象棋助手就绪\n等待对局…"
+
+                titleTv = TextView(appContext).apply {
+                    text = "象棋助手就绪"
                     setTextColor(Color.WHITE)
-                    setShadowLayer(6f, 0f, 0f, Color.BLACK)
-                    textSize = 16f
+                    textSize = 17f
+                    paint.isFakeBoldText = true
                 }
-                view = tv
-                val lp = WindowManager.LayoutParams(
+                detailTv = TextView(appContext).apply {
+                    text = "等待对局…"
+                    setTextColor(Color.parseColor("#BDBDBD"))
+                    textSize = 14f
+                }
+                val textCol = LinearLayout(appContext).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(titleTv)
+                    addView(detailTv)
+                }
+                // ASCII frame spinner: a ProgressBar's indeterminate drawable never
+                // rendered in this overlay, and exotic glyphs may miss from the
+                // system font — plain ASCII frames have zero such risk.
+                spinner = TextView(appContext).apply {
+                    text = "|"
+                    setTextColor(Color.WHITE)
+                    textSize = 20f
+                    paint.isFakeBoldText = true
+                    visibility = View.GONE
+                }
+                playBtn = Button(appContext).apply {
+                    text = "走棋"
+                    textSize = 14f
+                    isEnabled = false
+                    setOnClickListener { onPlay?.invoke() }
+                }
+                root = LinearLayout(appContext).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#CC1E1E1E"))
+                        cornerRadius = dp(16).toFloat()
+                    }
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    addView(spinner, LinearLayout.LayoutParams(dp(24), dp(24)).apply {
+                        marginEnd = dp(8)
+                    })
+                    addView(textCol, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                    ))
+                    addView(playBtn, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { marginStart = dp(8) })
+                    // Touch listener attached after lp exists (see below).
+                }
+
+                lp = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                     android.graphics.PixelFormat.TRANSLUCENT
-                )
-                lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                wm?.addView(tv, lp)
+                ).apply {
+                    val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    val sx = prefs.getInt(K_OX, NO_POS)
+                    val sy = prefs.getInt(K_OY, NO_POS)
+                    if (sx != NO_POS && sy != NO_POS) {
+                        gravity = Gravity.TOP or Gravity.START
+                        x = sx
+                        y = sy
+                    } else {
+                        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    }
+                }
+                root?.setOnTouchListener(DragTouchListener(wm, root, lp) { x, y ->
+                    try {
+                        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                            .putInt(K_OX, x)
+                            .putInt(K_OY, y)
+                            .apply()
+                    } catch (_: Throwable) {
+                    }
+                })
+                wm?.addView(root, lp)
                 added = true
             } catch (_: Throwable) {
                 // overlay permission missing — allow a later retry (e.g. after the
@@ -67,12 +158,84 @@ object OverlayManager {
         }
     }
 
+    /** Drag-to-move (banner body only; button keeps its own clicks). */
+    private class DragTouchListener(
+        private val wm: WindowManager?,
+        private val root: LinearLayout?,
+        private val lp: WindowManager.LayoutParams?,
+        private val onDrop: (Int, Int) -> Unit,
+    ) : View.OnTouchListener {
+        private var downRawX = 0f
+        private var downRawY = 0f
+        private var baseX = 0
+        private var baseY = 0
+        private var dragging = false
+        private var slop = -1
+
+        override fun onTouch(v: View, ev: MotionEvent): Boolean {
+            if (slop < 0) {
+                slop = try {
+                    ViewConfiguration.get(v.context).scaledTouchSlop
+                } catch (_: Throwable) {
+                    12
+                }
+            }
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = ev.rawX
+                    downRawY = ev.rawY
+                    baseX = lp?.x ?: 0
+                    baseY = lp?.y ?: 0
+                    dragging = false
+                    return false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!dragging &&
+                        (kotlin.math.abs(ev.rawX - downRawX) > slop ||
+                            kotlin.math.abs(ev.rawY - downRawY) > slop)
+                    ) {
+                        dragging = true
+                        // Re-anchor to absolute screen coords on first drag frame.
+                        val loc = IntArray(2)
+                        v.getLocationOnScreen(loc)
+                        baseX = loc[0]
+                        baseY = loc[1]
+                        lp?.gravity = Gravity.TOP or Gravity.START
+                    }
+                    if (dragging) {
+                        lp?.x = baseX + (ev.rawX - downRawX).toInt()
+                        lp?.y = baseY + (ev.rawY - downRawY).toInt()
+                        try {
+                            wm?.updateViewLayout(root, lp)
+                        } catch (_: Throwable) {
+                        }
+                        return true
+                    }
+                    return false
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) {
+                        dragging = false
+                        onDrop(lp?.x ?: 0, lp?.y ?: 0)
+                        return true
+                    }
+                    return false
+                }
+            }
+            return false
+        }
+    }
+
     /** Core writer: persistent two-line banner. */
     @Volatile private var lastTitle: String = ""
     fun showStatus(title: String, detail: String = "") {
         lastTitle = title
         main.post {
-            view?.text = if (detail.isEmpty()) title else "$title\n$detail"
+            titleTv?.text = title
+            detailTv?.text = detail
+            detailTv?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
+            setSpinner(false)
+            setPlayButton(false, "走棋")
         }
     }
 
@@ -81,7 +244,14 @@ object OverlayManager {
 
     /** Analysis running for the user's turn. */
     fun showThinking(autoplay: Boolean) {
-        showStatus(if (autoplay) "自动走棋中…" else "等待走棋中…", "正在计算…")
+        lastTitle = if (autoplay) "自动走棋中…" else "等待走棋中…"
+        main.post {
+            titleTv?.text = lastTitle
+            detailTv?.text = "正在计算…"
+            detailTv?.visibility = View.VISIBLE
+            setSpinner(autoplay)
+            setPlayButton(false, if (autoplay) "自动" else "走棋")
+        }
     }
 
     fun showBestMove(
@@ -89,30 +259,75 @@ object OverlayManager {
         autoplay: Boolean = false, userColor: String? = null,
     ) {
         val stm = fen.split(' ').getOrNull(1)
-        val line2 = com.chessassist.engine.ChessMath.formatWinRate(scoreCp, stm, userColor)
-        showStatus(if (autoplay) "自动走棋中：$uci" else "推荐：$uci", line2)
+        val line2 = ChessMath.formatWinRate(scoreCp, stm, userColor)
+        val rate = ChessMath.userWinRate01(scoreCp, stm, userColor)
+        val title = if (autoplay) "自动走棋中：$uci" else "推荐：$uci"
+        lastTitle = title
+        main.post {
+            titleTv?.text = title
+            detailTv?.text = line2
+            detailTv?.visibility = View.VISIBLE
+            detailTv?.setTextColor(ChessMath.winRateColor(rate))
+            setSpinner(autoplay)
+            if (autoplay) setPlayButton(false, "自动") else setPlayButton(true, "走棋")
+        }
     }
 
     /** Opponent's turn (or idle): keep the banner resident, show last conclusion. */
     fun clear(reason: String = "等待对手走棋…", detail: String = "") {
         main.post {
-            view?.let {
-                // Don't wipe a fresher state that arrived out of order; only replace
-                // move-related lines or the initial text.
-                val cur = it.text.toString()
-                if (cur.startsWith("推荐") || cur.startsWith("自动走棋中") ||
-                    cur.startsWith("等待走棋中") || cur.startsWith("象棋助手")
-                ) {
-                    it.text = if (detail.isEmpty()) reason else "$reason\n$detail"
-                }
+            // Don't wipe a fresher state that arrived out of order.
+            val cur = titleTv?.text.toString()
+            if (cur.startsWith("推荐") || cur.startsWith("自动走棋中") ||
+                cur.startsWith("等待走棋中") || cur.startsWith("象棋助手")
+            ) {
+                lastTitle = reason
+                titleTv?.text = reason
+                detailTv?.text = detail
+                detailTv?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
+                setSpinner(false)
+                setPlayButton(false, "走棋")
             }
+        }
+    }
+
+    private fun setPlayButton(enabled: Boolean, text: String) {
+        playBtn?.isEnabled = enabled
+        playBtn?.text = text
+    }
+
+    private val spinFrames = arrayOf("|", "/", "-", "\\")
+
+    private val spinTick = object : Runnable {
+        override fun run() {
+            val v = spinner ?: return
+            if (v.visibility != View.VISIBLE) return
+            spinFrame = (spinFrame + 1) % spinFrames.size
+            v.text = spinFrames[spinFrame]
+            main.postDelayed(this, 150)
+        }
+    }
+
+    private fun setSpinner(spinning: Boolean) {
+        val v = spinner ?: return
+        main.removeCallbacks(spinTick)
+        if (spinning) {
+            v.visibility = View.VISIBLE
+            main.post(spinTick)
+        } else {
+            v.visibility = View.GONE
         }
     }
 
     fun release() {
         main.post {
-            try { view?.let { wm?.removeView(it) } } catch (_: Throwable) {}
-            view = null
+            try { main.removeCallbacks(spinTick) } catch (_: Throwable) {}
+            try { root?.let { wm?.removeView(it) } } catch (_: Throwable) {}
+            root = null
+            titleTv = null
+            detailTv = null
+            playBtn = null
+            spinner = null
             added = false
             initScheduled = false
         }

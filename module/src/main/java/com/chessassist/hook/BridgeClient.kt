@@ -172,9 +172,9 @@ object BridgeClient {
         }
         if (out.isEmpty()) return null
         // Normalize to the legacy command shape: {"cmd":...,"move":...,"fen":...,"autoplay":...}
-        if (out["t"] == "bestmove" && !out.containsKey("cmd")) out["cmd"] = "bestmove"
-        if (out["t"] == "clear" && !out.containsKey("cmd")) out["cmd"] = "clear"
-        if (out["t"] == "config" && !out.containsKey("cmd")) out["cmd"] = "config"
+        // Any "t" doubles as the command name when "cmd" is absent (covers "play").
+        val t = out["t"]
+        if (t != null && !out.containsKey("cmd")) out["cmd"] = t
         return out
     }
 }

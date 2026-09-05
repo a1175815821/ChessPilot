@@ -10,10 +10,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Opening Duolingo from the control screen needs explicit visibility. -->
+    <queries>
+        <package android:name="com.duolingo" />
+    </queries>
+
     <application
         android:label="ChessAssist"
         android:allowBackup="false"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@android:style/Theme.Material.NoActionBar">
 
         <provider
             android:name=".BridgeProvider"

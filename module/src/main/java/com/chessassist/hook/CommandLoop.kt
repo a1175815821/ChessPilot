@@ -52,6 +52,16 @@ object CommandLoop {
                 "clear" -> ensurePainter()?.clear()
                 // Kept for backward compat: remembered but no longer gates autoplay.
                 "config" -> BridgePublisher.autoPlayEnabled = cmd["autoplay"] == "1"
+                // Semi-auto: user tapped the banner button — play the exact pair the
+                // companion just pushed (freshness gate inside performMove applies).
+                "play" -> {
+                    val uci = cmd["move"] ?: return
+                    val fen = cmd["fen"] ?: return
+                    ensurePlayer()?.performMove(
+                        uci, fen,
+                        cmd["autoplayDelay"]?.toLongOrNull()
+                    )
+                }
             }
         } catch (t: Throwable) {
             MainHook.log("command handling: $t")

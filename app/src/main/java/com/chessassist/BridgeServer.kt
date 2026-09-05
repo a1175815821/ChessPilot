@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   hook -> app : {"t":"help","code":"promotion|stuck","move":"e7e8q"}
  *   app  -> hook: {"t":"bestmove","move":"e2e4","fen":"...","autoplay":"0","autoplayDelay":"450"}
  *   app  -> hook: {"t":"clear"} | {"t":"config","autoplay":"0"}
+ *   app  -> hook: {"t":"play","move":"e2e4","fen":"...","autoplayDelay":"450"}
  */
 object BridgeServer {
 
@@ -151,6 +152,16 @@ object BridgeServer {
 
     fun pushClear() {
         push(JSONObject().apply { put("t", "clear") })
+    }
+
+    /** Semi-auto: user tapped the banner button — play this exact (move, fen). */
+    fun pushPlay(move: String, fen: String, autoplayDelayMs: Long) {
+        push(JSONObject().apply {
+            put("t", "play")
+            put("move", move)
+            put("fen", fen)
+            put("autoplayDelay", autoplayDelayMs.toString())
+        })
     }
 
     // ------------------------------------------------------------------ server

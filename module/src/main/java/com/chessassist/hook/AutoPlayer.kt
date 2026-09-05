@@ -205,7 +205,21 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                 }
                 MainHook.log("autoplay: giving up after $attempts attempts: $uci")
                 finishFlight(key)
-                BridgeClient.sendHelp(if (isPromo) "promotion" else "stuck", uci)
+                val code = if (isPromo) "promotion" else "stuck"
+                BridgeClient.sendHelp(code, uci)
+                // The companion banner lives in the OTHER app, invisible mid-game.
+                // Mirror the plea as a system toast inside Duolingo itself (text
+                // toasts need no overlay permission).
+                try {
+                    val msg = if (isPromo) "升变请手动选皇后（$uci）" else "请手动走 $uci"
+                    val ctx = BridgeAccess.context
+                    if (ctx != null) {
+                        android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+                        MainHook.log("autoplay: toasted help in game")
+                    }
+                } catch (t: Throwable) {
+                    MainHook.log("autoplay: toast failed: ${t.message?.take(80)}")
+                }
             } catch (t: Throwable) {
                 MainHook.log("autoplay verify failed: $t")
             }
@@ -236,13 +250,16 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                     false
                 }
                 if (!tapped) {
-                    // Primary drive: confirm the staged queen-default move via the
-                    // Rive signal (queen engine-moves only; anything else waits).
+                    // Signal ladder: one Rive hypothesis per retry round (queen
+                    // engine-moves only; anything else waits for manual).
+                    // Round outcomes are judged by the verify loop; the user is
+                    // asked to also report what they SEE (panel closed? applied?).
                     val fired = if (uci.length == 5 && uci[4].lowercaseChar() == 'q') {
                         try {
-                            RivePicker.firePromoted(view)
+                            MainHook.log("promotion: signal round $attempts for $uci")
+                            RivePicker.driveRound(view, attempts)
                         } catch (t: Throwable) {
-                            MainHook.log("promotion fire threw: ${t.message?.take(100)}")
+                            MainHook.log("promotion drive threw: ${t.message?.take(100)}")
                             false
                         }
                     } else {
@@ -250,7 +267,7 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                         false
                     }
                     if (!fired) {
-                        MainHook.log("promotion: no picker hit for $toSquare — waiting for manual pick (verify loop watches)")
+                        MainHook.log("promotion: no signal matched for $toSquare — waiting for manual pick (verify loop watches)")
                     }
                 }
             } catch (t: Throwable) { MainHook.log("promotion tap failed: $t") }

@@ -170,81 +170,132 @@ object RivePicker {
     }
 
     /**
-     * PRIMARY DRIVE: fire `promoted_trigger` on the live `chess_statemachine`.
-     *
-     * Evidence chain (2026-09-05, no coordinates involved):
-     * - Our dest tap stages the queen-default promo Move in-game
-     *   (`cl5.l/m` with uci `d7d8q` observed live from the tap alone).
-     * - `promoscan` census of the live board controller shows exactly one
-     *   artboard (`chess_artboard`) with one state machine (`chess_statemachine`)
-     *   carrying `promoted_trigger` among 19 inputs.
-     * - Queen-only for now (engine underpromotions fall back to manual): the
-     *   staged move is always the queen default, and firing must never confirm
-     *   a rook/knight/bishop the engine actually chose. The verify loop was
-     *   taught 5-char UCI compare for promos, so a wrong piece can never pass
-     *   as applied.
-     * Every step is null-checked and exception-proofed; any miss aborts to the
-     * manual path. Must run on the main thread (Rive contract); handlePromotion
-     * already does. Returns true when the trigger was fired.
+     * Rive-signal ladder (no coordinates anywhere). One hypothesis per retry
+     * round — a single hands-free replay tests them all, the verify loop
+     * judging each:
+     *   1. fire `promoted_trigger` (queen-confirm by name; FIRED live with no
+     *      effect — kept as round 1 to confirm the negative, costs nothing).
+     *   2. fire `promotion_box_trigger` (observed at picker OPEN; re-fire may
+     *      toggle/confirm).
+     *   3. set `promotion_mode_bool=false` (close picker mode; may commit the
+     *      staged queen-default move).
+     * Queen engine-moves only for firing (the staged move is always the queen
+     * default; firing must never confirm a rook/knight/bishop the engine
+     * actually chose — and the 5-char UCI verify makes a wrong piece unable to
+     * pass as applied anyway). Every step null-checked and exception-proofed;
+     * any miss aborts to the manual path. Main thread only (Rive contract).
      */
-    fun firePromoted(boardView: View): Boolean {
+    fun driveRound(boardView: View, round: Int): Boolean {
         return try {
-            val controller = boardView.call0("getController", "getRiveController")
-                ?: boardView.field0("controller", "riveController")
-                ?: run {
-                    MainHook.log("rivepicker: fire no controller")
-                    return false
-                }
-            val sms = mutableListOf<Any>()
-            try {
-                val m = controller.javaClass.methods.firstOrNull {
-                    it.name == "getStateMachines" && it.parameterTypes.isEmpty()
-                }
-                val v = m?.invoke(controller)
-                if (v is List<*>) sms.addAll(v.filterNotNull())
-            } catch (_: Throwable) { }
-            if (sms.isEmpty()) {
-                // Shape fallback (same walk as the probe).
-                for (m in controller.javaClass.methods) {
-                    if (m.parameterTypes.isNotEmpty()) continue
-                    if (!m.returnType.name.contains("StateMachine")) continue
-                    try {
-                        when (val v = m.invoke(controller)) {
-                            is List<*> -> sms.addAll(v.filterNotNull())
-                            null -> {}
-                            else -> sms.add(v)
-                        }
-                    } catch (_: Throwable) { }
-                }
+            when (round) {
+                2 -> fireInput(boardView, "promotion_box_trigger")
+                3 -> setBoolInput(boardView, "promotion_mode_bool", false)
+                else -> fireInput(boardView, "promoted_trigger")
             }
-            for (sm in sms) {
-                val smName = try {
-                    sm.javaClass.getMethod("getName").invoke(sm) as? String
-                } catch (_: Throwable) { null }
-                if (smName != "chess_statemachine") continue
-                val trig = try {
-                    sm.javaClass.methods.firstOrNull {
-                        it.name == "input" && it.parameterTypes.size == 1 &&
-                            it.parameterTypes[0] == String::class.java
-                    }?.invoke(sm, "promoted_trigger")
-                } catch (_: Throwable) { null } ?: continue
+        } catch (t: Throwable) {
+            MainHook.log("rivepicker: drive failed: ${t.message?.take(120)}")
+            false
+        }
+    }
+
+    private fun stateMachinesOf(boardView: View): List<Any> {
+        val controller = boardView.call0("getController", "getRiveController")
+            ?: boardView.field0("controller", "riveController")
+            ?: return emptyList()
+        val sms = mutableListOf<Any>()
+        try {
+            val m = controller.javaClass.methods.firstOrNull {
+                it.name == "getStateMachines" && it.parameterTypes.isEmpty()
+            }
+            val v = m?.invoke(controller)
+            if (v is List<*>) sms.addAll(v.filterNotNull())
+        } catch (_: Throwable) { }
+        if (sms.isEmpty()) {
+            for (m in controller.javaClass.methods) {
+                if (m.parameterTypes.isNotEmpty()) continue
+                if (!m.returnType.name.contains("StateMachine")) continue
+                try {
+                    when (val v = m.invoke(controller)) {
+                        is List<*> -> sms.addAll(v.filterNotNull())
+                        null -> {}
+                        else -> sms.add(v)
+                    }
+                } catch (_: Throwable) { }
+            }
+        }
+        return sms
+    }
+
+    private fun smInput(sm: Any, name: String): Any? {
+        return try {
+            sm.javaClass.methods.firstOrNull {
+                it.name == "input" && it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == String::class.java
+            }?.invoke(sm, name)
+        } catch (_: Throwable) { null }
+    }
+
+    private fun smName(sm: Any): String {
+        return try {
+            sm.javaClass.getMethod("getName").invoke(sm) as? String ?: "?"
+        } catch (_: Throwable) { "?" }
+    }
+
+    /** Fire a trigger input by name on every state machine that has it. */
+    fun fireInput(boardView: View, inputName: String): Boolean {
+        var fired = false
+        try {
+            for (sm in stateMachinesOf(boardView)) {
+                val trig = smInput(sm, inputName) ?: continue
                 if (!trig.javaClass.name.contains("Trigger")) {
-                    MainHook.log("rivepicker: fire promoted_trigger is not a trigger: ${trig.javaClass.name}")
+                    MainHook.log("rivepicker: fire $inputName not a trigger on ${smName(sm)}: ${trig.javaClass.name}")
                     continue
                 }
                 val fire = trig.javaClass.methods.firstOrNull {
                     it.name.startsWith("fire") && it.parameterTypes.isEmpty()
                 } ?: continue
-                fire.invoke(trig)
-                MainHook.log("rivepicker: fired promoted_trigger on chess_statemachine")
-                return true
+                try {
+                    fire.invoke(trig)
+                    MainHook.log("rivepicker: fired $inputName on ${smName(sm)}")
+                    fired = true
+                } catch (t: Throwable) {
+                    MainHook.log("rivepicker: fire $inputName threw: ${t.message?.take(80)}")
+                }
             }
-            MainHook.log("rivepicker: fire no chess_statemachine/promoted_trigger")
-            false
         } catch (t: Throwable) {
-            MainHook.log("rivepicker: fire failed: ${t.message?.take(120)}")
-            false
+            MainHook.log("rivepicker: fireInput failed: ${t.message?.take(100)}")
         }
+        if (!fired) MainHook.log("rivepicker: fire $inputName matched nothing")
+        return fired
+    }
+
+    /** Set a boolean input by name on every state machine that has it. */
+    fun setBoolInput(boardView: View, inputName: String, value: Boolean): Boolean {
+        var set = false
+        try {
+            for (sm in stateMachinesOf(boardView)) {
+                val inp = smInput(sm, inputName) ?: continue
+                if (!inp.javaClass.name.contains("Boolean")) {
+                    MainHook.log("rivepicker: set $inputName not boolean on ${smName(sm)}: ${inp.javaClass.name}")
+                    continue
+                }
+                val setter = inp.javaClass.methods.firstOrNull {
+                    it.name.startsWith("set") && it.parameterTypes.size == 1 &&
+                        it.parameterTypes[0] == java.lang.Boolean.TYPE
+                } ?: continue
+                try {
+                    setter.invoke(inp, value)
+                    MainHook.log("rivepicker: set $inputName=$value on ${smName(sm)}")
+                    set = true
+                } catch (t: Throwable) {
+                    MainHook.log("rivepicker: set $inputName threw: ${t.message?.take(80)}")
+                }
+            }
+        } catch (t: Throwable) {
+            MainHook.log("rivepicker: setBoolInput failed: ${t.message?.take(100)}")
+        }
+        if (!set) MainHook.log("rivepicker: set $inputName matched nothing")
+        return set
     }
 
     /** No-arg reflective call, null on any failure. */

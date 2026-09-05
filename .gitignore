@@ -20,3 +20,6 @@ dist/
 # IDE droppings
 .idea/
 *.iml
+# Stray screenshots/diagrams dropped in repo root by tooling
+/*.png
+/*.jpg

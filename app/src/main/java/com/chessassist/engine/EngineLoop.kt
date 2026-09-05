@@ -890,6 +890,17 @@ object EngineLoop {
                 // the current worker already owns this position (or a newer one).
                 if (isStale()) return
                 if (best != null) {
+                    // Tripwire for stream cross-talk (the ponder saga class of bug):
+                    // a bestmove from a search murdered at depth<=1 with a real
+                    // time budget means something else talked to the engine mid-
+                    // search (a racing stop/info leak). Loud in events, so the
+                    // next incident localizes itself instead of showing up as a
+                    // "mystery depth-1 + flipped winrate" banner.
+                    if (best.depth <= 1 && BridgeSettings.movetimeMs >= 500) {
+                        Log.w(TAG, "suspicious shallow result: depth=${best.depth} " +
+                            "for ${BridgeSettings.movetimeMs}ms budget (uci=${best.uci})")
+                        note("分析深度异常：${BridgeSettings.movetimeMs}ms 只搜到深度${best.depth}（${best.uci}），结果仍采用")
+                    }
                     lastAnalysedFen = fen
                     publishBest(fen, stm, user, best, ponderHit = false)
                 } else {

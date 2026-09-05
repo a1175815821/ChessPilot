@@ -208,6 +208,16 @@ cl5.s() 画原生箭头 ◄── BridgeClient ◄──Socket── bestmove �
   残留（防旧结果新局"命中"），`ponder()` 加坏 FEN 拒收，`analyse` 预算里
   depth 影子变量 bug 顺手修了（`go depth` 之前实际只等 movetime+35 秒）。
   状态页加 `极限思考` 状态行。仍默认关，待 soak 验证（3 盘+miss 盘）后手动开。
+- 续查（悬浮窗数据错乱：胜率变对方的、深度一直是 1）：同根因的两个侧面，
+  不是新 bug。深度 1 = ponder 线程 `finally` 的 `send("stop")` 补刀——工作线程
+  `go` 刚启动就被掐死在深度 1，`bestmove` 照吐，原样上屏（所以 ponder 一开
+  每轮都被暗杀，关掉就正常）；胜率反转 = 旧预测招成非法后缀时 SF 静默改搜
+  对方行棋局面，其对方视角 `info score` 串进分析的记分 = 直接反转。
+  独立进程落地后两者同灭（ponder 的 stop/info 再也碰不到主进程）。
+  胜率计算（`ChessMath`）与悬浮窗渲染（`main.post` 保序/`clear` 标题守卫）
+  已独立审计，无 bug——错乱的是串味的内容，不是算/显。
+  另加深度异常 tripwire：`movetime≥500ms` 却只搜到深度≤1 时记事件
+  （`分析深度异常`），下次同类串味第一时间现形，不再靠猜。
 
 ## 八、候选优化（未排期）
 

@@ -68,7 +68,18 @@ object RivePicker {
         } catch (_: Throwable) { }
     }
 
-    /** Hook SMI input setters + state-machine fire/getters by shape (kept names). */
+    /**
+     * Hook SMI input WRITES only (set/fire entry points). Never getters — and
+     * the hook body never invokes ANY method on the hooked object.
+     *
+     * Lesson learned the hard way (ANR, 2026-09-05): hooking `get*` while the
+     * hook body itself calls `getName()` is direct infinite recursion
+     * (hook → getName → hook → … → StackOverflowError caught per level). Every
+     * Rive input read then costs ~10k stack frames, and Rive-heavy screens
+     * freeze solid. This version cannot recurse by construction: it hooks only
+     * write entry points, and the body touches nothing but static metadata
+     * (method name, arg class names — never a call into the target).
+     */
     private fun hookSmiInputs(loader: ClassLoader) {
         val targets = listOf(
             "app.rive.runtime.kotlin.core.SMIBoolean",
@@ -84,29 +95,28 @@ object RivePicker {
                 for (m in clz.declaredMethods) {
                     if (m.isSynthetic) continue
                     val n = m.name
-                    val interesting = n.startsWith("set") || n.startsWith("fire") ||
-                        n.startsWith("get") || n == "invoke"
-                    if (!interesting) continue
-                    // Skip per-frame noise by name; value setters/getters are rare.
-                    if (n.contains("dvance", true) || n.contains("pdate", true) || n.contains("raw", true)) continue
+                    if (!(n.startsWith("set") || n.startsWith("fire"))) continue
                     try {
                         XposedBridge.hookMethod(m, object : XC_MethodHook() {
                             override fun beforeHookedMethod(param: MethodHookParam) {
                                 try {
-                                    val self = try {
-                                        param.thisObject?.javaClass?.getMethod("getName")?.invoke(param.thisObject) as? String
-                                    } catch (_: Throwable) { null }
+                                    // Static metadata only — no calls into param.thisObject,
+                                    // or this hook recurses into itself.
+                                    val selfCls = try {
+                                        param.thisObject?.javaClass?.name?.substringAfterLast('.')
+                                    } catch (_: Throwable) { "?" }
                                     val args = param.args.map {
                                         when (it) {
                                             null -> "null"
                                             is String -> it.take(40)
                                             is Number, is Boolean -> it.toString()
-                                            else -> it.javaClass.name.substringAfterLast('.').take(20)
+                                            else -> try {
+                                                it.javaClass.name.substringAfterLast('.').take(20)
+                                            } catch (_: Throwable) { "?" }
                                         }
                                     }.joinToString(",").take(120)
-                                    val key = "$n:${self ?: "?"}"
-                                    if (throttled("smi:$key")) return
-                                    MainHook.log("rivepicker: smi.$n[${self ?: "?"}] args=[$args]")
+                                    if (throttled("smi:$n:$args")) return
+                                    MainHook.log("rivepicker: smi.$n[$selfCls] args=[$args]")
                                 } catch (_: Throwable) { }
                             }
                         })

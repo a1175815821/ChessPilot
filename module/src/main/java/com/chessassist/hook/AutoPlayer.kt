@@ -133,8 +133,10 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
         // Human-like gap with ±20% jitter; Duolingo highlights the selected square here.
         val jittered = (gap * (0.8 + rand.nextDouble() * 0.4)).toLong()
         // Promotion only: snapshot the clickable set BEFORE the select-tap so the
-        // picker driver can diff what the destination-tap opens (runs on UI thread).
+        // picker driver can diff what the destination-tap opens (runs on UI thread),
+        // and arm the PromoTrace window (covers 3 attempts + the user's manual tap).
         prePromoKeys = if (promo != null) {
+            try { PromoTrace.arm() } catch (_: Throwable) { }
             try { PromotionPicker.snapshotKeys(view) } catch (_: Throwable) { emptySet() }
         } else emptySet()
         tapSquare(view, from, flipped)

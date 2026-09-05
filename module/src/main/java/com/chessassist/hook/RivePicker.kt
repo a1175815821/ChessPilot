@@ -100,11 +100,13 @@ object RivePicker {
                         XposedBridge.hookMethod(m, object : XC_MethodHook() {
                             override fun beforeHookedMethod(param: MethodHookParam) {
                                 try {
-                                    // Static metadata only — no calls into param.thisObject,
-                                    // or this hook recurses into itself.
-                                    val selfCls = try {
-                                        param.thisObject?.javaClass?.name?.substringAfterLast('.')
-                                    } catch (_: Throwable) { "?" }
+                                    // Static metadata only — no METHOD calls into
+                                    // param.thisObject, or this hook recurses into
+                                    // itself (ANR, 2026-09-05). FIELD reads are safe:
+                                    // Xposed hooks methods, never fields. The SMI
+                                    // input name lives in the `name` backing field
+                                    // up the SMIInput hierarchy.
+                                    val selfName = smiFieldName(param.thisObject)
                                     val args = param.args.map {
                                         when (it) {
                                             null -> "null"
@@ -115,8 +117,8 @@ object RivePicker {
                                             } catch (_: Throwable) { "?" }
                                         }
                                     }.joinToString(",").take(120)
-                                    if (throttled("smi:$n:$args")) return
-                                    MainHook.log("rivepicker: smi.$n[$selfCls] args=[$args]")
+                                    if (throttled("smi:$n:$selfName")) return
+                                    MainHook.log("rivepicker: smi.$n[$selfName] args=[$args]")
                                 } catch (_: Throwable) { }
                             }
                         })
@@ -130,6 +132,28 @@ object RivePicker {
     }
 
     // ------------------------------------------------------------ probe -----
+
+    /**
+     * SMI input name WITHOUT calling anything: read the `name` backing field up
+     * the hierarchy. Field reads cannot re-enter method hooks by construction.
+     */
+    private fun smiFieldName(o: Any?): String {
+        if (o == null) return "?"
+        return try {
+            var c: Class<*>? = o.javaClass
+            while (c != null && c != Any::class.java && c.name.startsWith("app.rive.")) {
+                try {
+                    val f = c.getDeclaredField("name")
+                    if (f.type == String::class.java) {
+                        try { f.isAccessible = true } catch (_: Throwable) { }
+                        return (f.get(o) as? String)?.take(48) ?: continue
+                    }
+                } catch (_: Throwable) { }
+                c = c.superclass
+            }
+            o.javaClass.name.substringAfterLast('.')
+        } catch (_: Throwable) { "?" }
+    }
 
     /** No-arg reflective call, null on any failure. */
     private fun Any.call0(vararg names: String): Any? {
@@ -305,13 +329,20 @@ object RivePicker {
                     }
                 } catch (_: Throwable) { }
             }
+            // Per-frame engine noise: polled dozens of times per second, carries
+            // no signal. Skipped at install (cannot unhook later).
+            val noisy = setOf(
+                "advance", "cppAdvance", "notifyAdvance",
+                "getStatesChanged", "getStateChangedCount", "cppStateChangedCount",
+                "getViewModelInstance"
+            )
             var n = 0
             for (lis in found.distinct()) {
                 if (!hookedListeners.add(lis)) continue
                 try {
                     logMethodsOnce(lis.javaClass, "listener")
                     for (m in lis.javaClass.declaredMethods) {
-                        if (m.isSynthetic) continue
+                        if (m.isSynthetic || m.name in noisy) continue
                         try {
                             XposedBridge.hookMethod(m, object : XC_MethodHook() {
                                 override fun beforeHookedMethod(param: MethodHookParam) {
@@ -324,7 +355,22 @@ object RivePicker {
                                                 else -> describeEvent(it)
                                             }
                                         }.joinToString(",").take(300)
+                                        // Getters (no args) are polled per frame: only log
+                                        // when the result is non-empty (real events).
+                                        if (param.args.isEmpty()) return
                                         MainHook.log("rivepicker: evt.${m.name}($args)")
+                                    } catch (_: Throwable) { }
+                                }
+                                override fun afterHookedMethod(param: MethodHookParam) {
+                                    try {
+                                        if (param.args.isNotEmpty()) return
+                                        val r = param.result ?: return
+                                        val desc = if (r is Collection<*>) {
+                                            if (r.isEmpty()) return
+                                            r.filterNotNull().take(6).joinToString("|") { describeEvent(it) }.take(300)
+                                        } else describeEvent(r)
+                                        if (throttled("evt:${m.name}:$desc")) return
+                                        MainHook.log("rivepicker: evt.${m.name} -> $desc")
                                     } catch (_: Throwable) { }
                                 }
                             })

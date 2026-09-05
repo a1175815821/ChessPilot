@@ -240,9 +240,11 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
      * dest d8 (472,986) device-px, queen (250,1231); pitch ≈ 1.3 cells).
      * X side is screen-stable (queen renders leftmost regardless of flip); Y side
      * points at the board center (promotions always land on the far rank, so in
-     * practice the panel is below the destination). Clamped into the view —
-     * edge files (a/h) may shift the panel, in which case the log line below plus
-     * the next screenshot corrects the constants. Replaces the old origin-square
+     * practice the panel is below the destination). The panel (~5.6 cells wide)
+     * centers on the dest file but clamps into the board — confirmed live:
+     * dest g8 needed queen at dest-2.95c, the unclamped dest-1.65c hit the rook.
+     * View edges clamp the final point; the log line carries every term so the
+     * next screenshot can correct the constants. Replaces the old origin-square
      * guess, which was proven useless (it just deselected the pawn).
      */
     private fun boardGuessQueen(view: View, toSquare: String, flipped: Boolean) {
@@ -255,13 +257,20 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
         }
         val (dx, dy) = squareToScreen(view, file, rank, flipped)
         val ySign = if (dy <= view.height / 2f) 1f else -1f
-        val qx = dx - 1.65f * cell
+        val boardSize = minOf(view.width, view.height).toFloat()
+        val boardLeft = (view.width - boardSize) / 2f
+        val boardRight = boardLeft + boardSize
+        val halfPanel = 2.8f * cell
+        val shiftL = maxOf(0f, (dx + halfPanel) - boardRight)
+        val shiftR = maxOf(0f, boardLeft - (dx - halfPanel))
+        val qx = dx - 1.65f * cell - shiftL + shiftR
         val qy = dy + ySign * 1.81f * cell
         val cx = qx.coerceIn(cell * 0.4f, view.width - cell * 0.4f)
         val cy = qy.coerceIn(cell * 0.4f, view.height - cell * 0.4f)
         MainHook.log(
             "promotion: L3 pinned queen dest=$toSquare flip=$flipped " +
                 "cell=${cell.toInt()} d=(${dx.toInt()},${dy.toInt()}) " +
+                "shiftL=${shiftL.toInt()} shiftR=${shiftR.toInt()} " +
                 "q=(${cx.toInt()},${cy.toInt()})" +
                 (if (cx != qx || cy != qy) " CLAMPED" else "")
         )

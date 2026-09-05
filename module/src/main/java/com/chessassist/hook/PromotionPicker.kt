@@ -107,8 +107,7 @@ object PromotionPicker {
     /** Key snapshot of the current clickable set (for the before/after diff). */
     fun snapshotKeys(boardView: View): Set<String> {
         return try {
-            val decor = decorOf(boardView) ?: return emptySet()
-            scanViews(decor).map { keyOf(it) }.toSet()
+            allRoots(boardView).flatMap { scanViews(it) }.map { keyOf(it) }.toSet()
         } catch (t: Throwable) {
             MainHook.log("promotion: snapshot failed: ${t.message?.take(100)}")
             emptySet()
@@ -145,11 +144,16 @@ object PromotionPicker {
         tapAt: (View, Float, Float, String) -> Unit
     ): Boolean {
         try {
-            val decor = decorOf(boardView) ?: return false
+            val roots = allRoots(boardView)
+            if (roots.isEmpty()) return false
+            val decor = roots[0]
             val actName = try { activityOf(boardView)?.javaClass?.name } catch (_: Throwable) { "?" }
-            val post = scanViews(decor)
+            val post = roots.flatMap { scanViews(it) }
             val hosts = post.count { it.cls.contains("AndroidComposeView") }
-            MainHook.log("promotion: scan act=$actName nodes=${post.size} composeHosts=$hosts")
+            MainHook.log(
+                "promotion: scan act=$actName roots=${roots.size} " +
+                    "nodes=${post.size} composeHosts=$hosts"
+            )
 
             // Before/after diff: what did the destination tap add?
             if (preKeys.isNotEmpty()) {
@@ -218,9 +222,10 @@ object PromotionPicker {
     /** Read-only probe: scan + log everything, tap nothing. Safe on any screen. */
     fun logOnlyScan(boardView: View) {
         try {
-            val decor = decorOf(boardView) ?: return
+            val roots = allRoots(boardView)
+            if (roots.isEmpty()) return
             val actName = try { activityOf(boardView)?.javaClass?.name } catch (_: Throwable) { "?" }
-            val post = scanViews(decor)
+            val post = roots.flatMap { scanViews(it) }
             val hosts = post.filter { it.cls.contains("AndroidComposeView") }
             MainHook.log("promoscan: act=$actName nodes=${post.size} composeHosts=${hosts.size}")
             val withText = post.filter { !it.desc.isNullOrBlank() || !it.text.isNullOrBlank() }
@@ -378,7 +383,7 @@ object PromotionPicker {
      * window bounds. Pure reflection (no compose imports): library class names
      * are kept, so app obfuscation does not matter. Never throws.
      */
-    private fun collectHosts(decor: View): List<View> {
+    private fun collectHosts(roots: List<View>): List<View> {
         val hosts = mutableListOf<View>()
         fun collect(v: View, depth: Int) {
             if (hosts.size >= 16 || depth > 40) return
@@ -390,7 +395,9 @@ object PromotionPicker {
                 }
             } catch (_: Throwable) { }
         }
-        try { collect(decor, 0) } catch (t: Throwable) {
+        try {
+            roots.forEach { collect(it, 0) }
+        } catch (t: Throwable) {
             MainHook.log("promotion: compose host collect failed: ${t.message?.take(100)}")
         }
         return hosts
@@ -398,8 +405,7 @@ object PromotionPicker {
 
     private fun collectComposeClicks(boardView: View): List<ComposeClick> {
         val out = mutableListOf<ComposeClick>()
-        val decor = decorOf(boardView) ?: return out
-        val hosts = collectHosts(decor)
+        val hosts = collectHosts(allRoots(boardView))
         if (hosts.isEmpty()) {
             MainHook.log("promotion: L2 no AndroidComposeView found")
             return out
@@ -503,14 +509,41 @@ object PromotionPicker {
         return acc
     }
 
-    private fun rectOfShape(node: Any): Rect? {
+    private data class Bounds(val l: Int, val t: Int, val r: Int, val b: Int)
+
+    /**
+     * Window-bounds accessor by shape. Accepts android.graphics.Rect AND
+     * androidx.compose.ui.geometry.Rect (Compose renames do not touch the type
+     * name; live failure was exactly this: the node exposes a compose Rect, not
+     * the framework one, so the old `== Rect` test rejected the true root).
+     */
+    private fun rectOfShape(node: Any): Bounds? {
         for (m in noArgMethods(node)) {
-            if (m.returnType != Rect::class.java) continue
+            val rt = m.returnType
+            if (rt.isPrimitive || rt == Void.TYPE) continue
+            if (rt != Rect::class.java && !rt.name.endsWith("Rect")) continue
             try {
-                val r = m.invoke(node) as? Rect
-                if (r != null) return r
+                val o = m.invoke(node) ?: continue
+                val l = intOf(o, "getLeft", "left") ?: continue
+                val t = intOf(o, "getTop", "top") ?: continue
+                val r = intOf(o, "getRight", "right") ?: continue
+                val b = intOf(o, "getBottom", "bottom") ?: continue
+                if (r > l && b > t) return Bounds(l, t, r, b)
             } catch (_: Throwable) { }
         }
+        return null
+    }
+
+    /** Kotlin-property getter first (compose Rect), field second (framework Rect). */
+    private fun intOf(o: Any, getter: String, field: String): Int? {
+        try {
+            (o.javaClass.getMethod(getter).invoke(o) as? Number)?.let { return it.toInt() }
+        } catch (_: Throwable) { }
+        try {
+            val f = o.javaClass.getDeclaredField(field)
+            try { f.isAccessible = true } catch (_: Throwable) { }
+            (f.get(o) as? Number)?.let { return it.toInt() }
+        } catch (_: Throwable) { }
         return null
     }
 
@@ -617,23 +650,57 @@ object PromotionPicker {
                 if (v != null) cands.add(v)
             } catch (_: Throwable) { }
         }
-        // SemanticsNode shape: exposes window bounds (Rect) + children (List).
+        // SemanticsNode shape: exposes window bounds (*Rect) + children (List).
+        // Non-matches are inventoried too: their method list is what tells us the
+        // true shape when the guess is wrong (live: `rzt` was rejected here).
         for (c in cands) {
             val ms = noArgMethods(c)
-            if (ms.any { it.returnType == Rect::class.java } &&
-                ms.any { it.returnType == java.util.List::class.java }
-            ) {
+            val hasBounds = ms.any {
+                it.returnType == Rect::class.java || it.returnType.name.endsWith("Rect")
+            }
+            val hasKids = ms.any { it.returnType == java.util.List::class.java }
+            if (hasBounds && hasKids) {
                 logMethodsOnce(c.javaClass, "node")
                 return c
             }
+            logMethodsOnce(c.javaClass, "node?bounds=$hasBounds/kids=$hasKids")
         }
+        MainHook.log("promotion: L2s root candidates=${cands.size}")
         return null
+    }
+
+    /**
+     * Every window root in this process (activity decor + dialog/popup windows).
+     * The promotion picker may live in its own window: scanning only the activity
+     * decor would then show `added=0` forever. WindowManagerGlobal is hidden API —
+     * failure degrades to activity-decor-only, never crashes.
+     */
+    private fun allRoots(boardView: View): List<View> {
+        val roots = mutableListOf<View>()
+        try {
+            (boardView.rootView ?: decorOf(boardView))?.let { roots.add(it) }
+        } catch (_: Throwable) { }
+        try {
+            val wmg = Class.forName("android.view.WindowManagerGlobal")
+                .getMethod("getInstance").invoke(null)
+            @Suppress("UNCHECKED_CAST")
+            val views = wmg?.javaClass?.getMethod("getViews")?.invoke(wmg) as? List<*>
+            views?.filterIsInstance<View>()?.forEach { v ->
+                try {
+                    val root = v.rootView ?: v
+                    if (roots.none { it === root }) roots.add(root)
+                } catch (_: Throwable) { }
+            }
+            MainHook.log("promotion: window roots=${roots.size}")
+        } catch (t: Throwable) {
+            MainHook.log("promotion: window enumerate failed (${t.message?.take(80)}), decor only")
+        }
+        return roots.ifEmpty { listOfNotNull(decorOf(boardView)) }
     }
 
     private fun collectComposeClicksByShape(boardView: View): List<ComposeClick> {
         val out = mutableListOf<ComposeClick>()
-        val decor = decorOf(boardView) ?: return out
-        val hosts = collectHosts(decor)
+        val hosts = collectHosts(allRoots(boardView))
         if (hosts.isEmpty()) return out
         for (host in hosts) {
             try {
@@ -671,14 +738,14 @@ object PromotionPicker {
                                 logged++
                                 MainHook.log(
                                     "promotion: L2s node desc=[$desc] actions=$actions " +
-                                        "bounds=[${bounds.left},${bounds.top}-${bounds.right},${bounds.bottom}]"
+                                        "bounds=[${bounds.l},${bounds.t}-${bounds.r},${bounds.b}]"
                                 )
                             }
                             out.add(
                                 ComposeClick(
                                     host, root,
-                                    bounds.exactCenterX(), bounds.exactCenterY(),
-                                    bounds.left, bounds.top, bounds.right, bounds.bottom,
+                                    (bounds.l + bounds.r) / 2f, (bounds.t + bounds.b) / 2f,
+                                    bounds.l, bounds.t, bounds.r, bounds.b,
                                     desc, "", invoke
                                 )
                             )

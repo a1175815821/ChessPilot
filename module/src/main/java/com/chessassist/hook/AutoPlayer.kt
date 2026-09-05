@@ -208,13 +208,14 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
     /**
      * After tapping the destination square, the app shows the promotion picker.
-     * First the adaptive driver ([PromotionPicker] L1 View tree + L2 Compose
-     * semantics) tries the real queen button; only when it finds nothing do we
-     * fall back to the board-relative guess (picker assumed Rive-drawn: queen is
-     * the cell one rank toward the board center from the destination square).
-     * 800 ms (was 350): the old delay fired before the picker finished opening.
-     * Verification + bounded retry is unified in scheduleAppliedCheck (no local retry
-     * here on purpose: two retry loops would double-tap and fight each other).
+     * The adaptive driver ([PromotionPicker]) taps the real queen button when it
+     * can find one (View-tree text match, or a new same-row button cluster from
+     * the before/after diff). Fixed coordinates were tried and REMOVED (d8 hit,
+     * g8 picked the rook — the panel clamps per file, and any constant dies on
+     * the next layout/resolution): when nothing is found we tap nothing and let
+     * the user pick, while the verify loop + [PromoTrace] record everything for
+     * the direct-API drive. 800 ms: the old 350 ms fired before the picker
+     * finished opening. Bounded retry stays unified in scheduleAppliedCheck.
      */
     private fun handlePromotion(
         view: View, toSquare: String, flipped: Boolean, startFen: String?, key: String
@@ -228,55 +229,11 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                     MainHook.log("promotion driver threw: ${t.message?.take(100)}")
                     false
                 }
-                if (!tapped) boardGuessQueen(view, toSquare, flipped)
+                if (!tapped) {
+                    MainHook.log("promotion: no picker hit for $toSquare — waiting for manual pick (verify loop watches)")
+                }
             } catch (t: Throwable) { MainHook.log("promotion tap failed: $t") }
         }, 800)
-    }
-
-    /**
-     * L3 fallback: screenshot-pinned queen coordinates.
-     *
-     * Pinned from a live picker screenshot (2026-09-05 lesson, 1080x2460, cell=135):
-     * the panel hangs BELOW the destination square (toward the board center),
-     * queen = leftmost button ≈ destCenter + (-1.65, +1.81) cells (measured:
-     * dest d8 (472,986) device-px, queen (250,1231); pitch ≈ 1.3 cells).
-     * X side is screen-stable (queen renders leftmost regardless of flip); Y side
-     * points at the board center (promotions always land on the far rank, so in
-     * practice the panel is below the destination). The panel (~5.6 cells wide)
-     * centers on the dest file but clamps into the board — confirmed live:
-     * dest g8 needed queen at dest-2.95c, the unclamped dest-1.65c hit the rook.
-     * View edges clamp the final point; the log line carries every term so the
-     * next screenshot can correct the constants. Replaces the old origin-square
-     * guess, which was proven useless (it just deselected the pawn).
-     */
-    private fun boardGuessQueen(view: View, toSquare: String, flipped: Boolean) {
-        val file = toSquare[0] - 'a'
-        val rank = toSquare[1] - '1'
-        val cell = minOf(view.width, view.height).toFloat() / 8f
-        if (cell <= 0) {
-            MainHook.log("promotion: L3 no layout yet, skipping ($toSquare)")
-            return
-        }
-        val (dx, dy) = squareToScreen(view, file, rank, flipped)
-        val ySign = if (dy <= view.height / 2f) 1f else -1f
-        val boardSize = minOf(view.width, view.height).toFloat()
-        val boardLeft = (view.width - boardSize) / 2f
-        val boardRight = boardLeft + boardSize
-        val halfPanel = 2.8f * cell
-        val shiftL = maxOf(0f, (dx + halfPanel) - boardRight)
-        val shiftR = maxOf(0f, boardLeft - (dx - halfPanel))
-        val qx = dx - 1.65f * cell - shiftL + shiftR
-        val qy = dy + ySign * 1.81f * cell
-        val cx = qx.coerceIn(cell * 0.4f, view.width - cell * 0.4f)
-        val cy = qy.coerceIn(cell * 0.4f, view.height - cell * 0.4f)
-        MainHook.log(
-            "promotion: L3 pinned queen dest=$toSquare flip=$flipped " +
-                "cell=${cell.toInt()} d=(${dx.toInt()},${dy.toInt()}) " +
-                "shiftL=${shiftL.toInt()} shiftR=${shiftR.toInt()} " +
-                "q=(${cx.toInt()},${cy.toInt()})" +
-                (if (cx != qx || cy != qy) " CLAMPED" else "")
-        )
-        tapViewAt(view, cx, cy, "promo-queen-pin")
     }
 
     /**

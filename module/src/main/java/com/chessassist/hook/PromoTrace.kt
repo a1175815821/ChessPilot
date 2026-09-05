@@ -34,11 +34,49 @@ object PromoTrace {
     private val lastLog = mutableMapOf<String, Long>()
 
     /** Open the trace window (covers 3 attempts + the user's manual tap). */
-    fun arm(ms: Long = 20000L) {
+    fun arm(ms: Long = 60000L) {
         armedUntil = System.currentTimeMillis() + ms
     }
 
     private fun armed() = System.currentTimeMillis() < armedUntil
+
+    /** Resolve a Piece object (Ly65 shape: field typed ChessPieceType) to its type. */
+    private fun pieceTypeOf(a: Any?): String? {
+        if (a == null) return null
+        return try {
+            val f = a.javaClass.declaredFields.firstOrNull {
+                it.type.name.contains("ChessPieceType")
+            } ?: return null
+            try { f.isAccessible = true } catch (_: Throwable) { }
+            f.get(a)?.toString()
+        } catch (_: Throwable) { null }
+    }
+
+    /** Best-effort UCI of a Move object (Move.b(): String, e.g. "g7g8q"). */
+    fun moveUci(move: Any?): String? {
+        if (move == null) return null
+        return try {
+            val m = move.javaClass.methods.firstOrNull {
+                it.name == "b" && it.parameterTypes.isEmpty() && it.returnType == String::class.java
+            } ?: return null
+            (m.invoke(move) as? String)?.take(8)
+        } catch (_: Throwable) { null }
+    }
+
+    private val VIA_EXCLUDE = listOf(
+        "java.", "kotlin.", "kotlinx.", "de.robv.", "com.chessassist.",
+        "dalvik.", "android.", "androidx.", "jdk.", "sun.", "com.android."
+    )
+
+    private fun callerChain(): String {
+        return try {
+            Thread.currentThread().stackTrace.asList()
+                .map { it.className }
+                .filter { cn -> VIA_EXCLUDE.none { cn.startsWith(it) } }
+                .take(8).joinToString(" < ") { it.substringAfterLast('.') }
+                .take(320)
+        } catch (_: Throwable) { "?" }
+    }
 
     fun install(lpparam: XC_LoadPackage.LoadPackageParam, remap: Remap) {
         hookMoveCtors(lpparam, remap)
@@ -49,6 +87,8 @@ object PromoTrace {
     private fun fmtArg(a: Any?): String {
         if (a == null) return "null"
         return try {
+            // Piece objects (Ly65) print as Piece[QUEEN] via their type field.
+            pieceTypeOf(a)?.let { return "Piece[$it]" }
             val n = a.javaClass.name
             when {
                 n.contains("ChessPieceType") || n.contains("ChessPlayerColor") -> a.toString()
@@ -74,10 +114,16 @@ object PromoTrace {
                     XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             try {
-                                val hasPiece = param.args.any {
-                                    it != null && it.javaClass.name.contains("ChessPieceType")
-                                }
-                                if (!hasPiece) {
+                                // Ctor shape (observed): (from, to, moverType, color,
+                                // capturedSq?, capturedOrPromoPiece?, ...). The old
+                                // detector flagged KING moves (3rd arg is the MOVER,
+                                // not the promotion). Promo = mover in {Q,R,B,N}.
+                                val mover = param.args.getOrNull(2)
+                                    ?.takeIf { it.javaClass.name.contains("ChessPieceType") }
+                                    ?.toString()
+                                val piece6 = pieceTypeOf(param.args.getOrNull(5))
+                                val isPromo = mover in listOf("QUEEN", "ROOK", "BISHOP", "KNIGHT")
+                                if (!isPromo && piece6 == null) {
                                     // Plain moves fire constantly — throttle hard.
                                     val now = System.currentTimeMillis()
                                     synchronized(lastLog) {
@@ -86,11 +132,11 @@ object PromoTrace {
                                     }
                                 }
                                 val args = param.args.map { fmtArg(it) }.joinToString(",").take(200)
-                                val via = Thread.currentThread().stackTrace
-                                    .map { it.className }
-                                    .filter { it.contains("duolingo") && !it.contains("chessassist") }
-                                    .take(6).joinToString(" < ").take(300)
-                                MainHook.log("promotrace: Move${if (hasPiece) "[PROMO]" else ""} args=[$args] via $via")
+                                MainHook.log(
+                                    "promotrace: Move${if (isPromo) "[PROMO]" else ""} " +
+                                        "mover=$mover piece6=$piece6 args=[$args] " +
+                                        "via ${callerChain()}"
+                                )
                             } catch (_: Throwable) { }
                         }
                     })
@@ -129,7 +175,12 @@ object PromoTrace {
                             }
                             try {
                                 val args = param.args.map { fmtArg(it) }.joinToString(",").take(160)
-                                MainHook.log("promotrace: cl5.$sig args=[$args]")
+                                // l()/m() carry the picked Move: resolve its UCI so the
+                                // log shows WHAT was submitted (e.g. g7g8q), not hashes.
+                                val extra = if (m.name == "l" || m.name == "m") {
+                                    moveUci(param.args.getOrNull(0))?.let { " uci=$it" } ?: ""
+                                } else ""
+                                MainHook.log("promotrace: cl5.$sig args=[$args]$extra")
                             } catch (_: Throwable) { }
                         }
                     })

@@ -211,7 +211,7 @@ object PromotionPicker {
             // ---- L2: Compose semantics queen button.
             if (scanCompose(boardView, tapAt)) return true
 
-            MainHook.log("promotion: L1+L2 no hit, caller falls back to board guess")
+            MainHook.log("promotion: L1+L2 no hit, caller waits for manual pick")
             return false
         } catch (t: Throwable) {
             MainHook.log("promotion: resolve failed: ${t.message?.take(140)}")
@@ -248,35 +248,31 @@ object PromotionPicker {
 
     // ------------------------------------------------------------ L2: Compose -----
 
-    /** Returns true when a queen semantics node was found and tapped. */
+    /**
+     * L2 is LOG-ONLY (stability first): Compose semantics are R8-renamed with
+     * empty roots on this build, so any tap derived from them would be a guess.
+     * Collection + logging stay (they map the terrain for free); tapping waits
+     * for the direct-API drive. Always returns false.
+     */
     private fun scanCompose(
         boardView: View,
         tapAt: (View, Float, Float, String) -> Unit
     ): Boolean {
         val clicks = collectComposeClicks(boardView)
-        // L2 text match first (unambiguous).
         for (c in clicks) {
             if (queenHit(c.desc, c.tag) != null) {
-                MainHook.log("promotion: L2 queen hit desc=[${c.desc}] tag=[${c.tag}]")
-                tapComposeButton(c, tapAt, "promo-compose")
-                return true
+                MainHook.log("promotion: L2 queen node (log-only) desc=[${c.desc}] tag=[${c.tag}]")
             }
         }
-        // L2b row fallback: leftmost of a same-band clickable cluster.
         val decor = decorOf(boardView)
         val rowQueen = leftmostOfRow(
             clicks.map { Cell(it.l, it.t, it.r, it.b) to it },
             decor?.width ?: 1080, decor?.height ?: 2400
         )
         if (rowQueen != null) {
-            MainHook.log(
-                "promotion: L2b row queen desc=[${rowQueen.desc}] tag=[${rowQueen.tag}] " +
-                    "bounds=[${rowQueen.l},${rowQueen.t}-${rowQueen.r},${rowQueen.b}]"
-            )
-            tapComposeButton(rowQueen, tapAt, "promo-composerow")
-            return true
+            MainHook.log("promotion: L2b row node (log-only) bounds=[${rowQueen.l},${rowQueen.t}-${rowQueen.r},${rowQueen.b}]")
         }
-        MainHook.log("promotion: L2 no hit among ${clicks.size} clickable semantics nodes")
+        MainHook.log("promotion: L2 log-only, ${clicks.size} clickable semantics nodes")
         return false
     }
 

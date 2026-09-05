@@ -148,7 +148,7 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                 if (isSuperseded(key, startFen, uci)) return@postDelayed
                 tapSquare(view, to, flipped)
                 if (promo != null) {
-                    handlePromotion(view, to, flipped, startFen, key)
+                    handlePromotion(view, uci, to, flipped, startFen, key)
                 }
                 scheduleAppliedCheck(view, uci, flipped, gap, startFen, cmdFen, promo != null, key)
             } catch (t: Throwable) { MainHook.log("autoplay release failed: $t") }
@@ -188,8 +188,11 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
         mainHandler.postDelayed({
             try {
                 if (isSuperseded(key, startFen, uci)) return@postDelayed
-                val uci4 = uci.take(4)
-                val applied = bridge.lastMoves.takeLast(3).any { it.take(4) == uci4 }
+                // Promotions compare the FULL 5-char UCI: lastMoves records the
+                // applied piece (g7g8r vs g7g8q), and a wrong piece must never
+                // pass as applied (the Rive drive only ever confirms queen).
+                val want = if (isPromo) uci.take(5) else uci.take(4)
+                val applied = bridge.lastMoves.takeLast(3).any { it.take(want.length) == want }
                 if (applied) {
                     MainHook.log("autoplay applied: $uci")
                     finishFlight(key)
@@ -221,7 +224,7 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
      * finished opening. Bounded retry stays unified in scheduleAppliedCheck.
      */
     private fun handlePromotion(
-        view: View, toSquare: String, flipped: Boolean, startFen: String?, key: String
+        view: View, uci: String, toSquare: String, flipped: Boolean, startFen: String?, key: String
     ) {
         mainHandler.postDelayed({
             try {
@@ -233,7 +236,22 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                     false
                 }
                 if (!tapped) {
-                    MainHook.log("promotion: no picker hit for $toSquare — waiting for manual pick (verify loop watches)")
+                    // Primary drive: confirm the staged queen-default move via the
+                    // Rive signal (queen engine-moves only; anything else waits).
+                    val fired = if (uci.length == 5 && uci[4].lowercaseChar() == 'q') {
+                        try {
+                            RivePicker.firePromoted(view)
+                        } catch (t: Throwable) {
+                            MainHook.log("promotion fire threw: ${t.message?.take(100)}")
+                            false
+                        }
+                    } else {
+                        MainHook.log("promotion: non-queen $uci — waiting for manual pick")
+                        false
+                    }
+                    if (!fired) {
+                        MainHook.log("promotion: no picker hit for $toSquare — waiting for manual pick (verify loop watches)")
+                    }
                 }
             } catch (t: Throwable) { MainHook.log("promotion tap failed: $t") }
         }, 800)

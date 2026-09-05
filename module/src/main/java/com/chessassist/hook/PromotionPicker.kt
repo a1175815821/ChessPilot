@@ -162,10 +162,10 @@ object PromotionPicker {
                 for (c in added.take(8)) MainHook.log("promotion: + ${fmt(c)}")
             }
 
-            // ---- L1b: user-confirmed layout — horizontal row of 2-6 similar cells
-            // (Q R B N left-to-right, queen leftmost), matched on the diff set so
-            // random dialogs can never trigger it. Text match stays first because
-            // it is unambiguous when descriptions exist.
+            // ---- L1b (LOG-ONLY): user-confirmed layout — horizontal row of 2-6
+            // similar cells (Q R B N left-to-right, queen leftmost), matched on
+            // the diff set. Never taps: a row heuristic can misfire on unknown
+            // dialogs, and the Rive-signal drive (primary) needs no taps at all.
             if (preKeys.isNotEmpty()) {
                 val added = post.filter { keyOf(it) !in preKeys }
                 val rowQueen = leftmostOfRow(
@@ -174,9 +174,7 @@ object PromotionPicker {
                     decor.width, decor.height
                 )
                 if (rowQueen != null) {
-                    MainHook.log("promotion: L1b row queen (leftmost of ${added.size} added): ${fmt(rowQueen)}")
-                    tapViewButton(rowQueen, tapAt, "promo-row")
-                    return true
+                    MainHook.log("promotion: L1b row node (log-only, ${added.size} added): ${fmt(rowQueen)}")
                 } else {
                     MainHook.log("promotion: L1b no row among ${added.size} added")
                 }

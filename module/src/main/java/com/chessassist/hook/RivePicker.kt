@@ -1,5 +1,7 @@
 package com.chessassist.hook
 
+import android.view.View
+import android.view.ViewGroup
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -165,6 +167,84 @@ object RivePicker {
             }
             o.javaClass.name.substringAfterLast('.')
         } catch (_: Throwable) { "?" }
+    }
+
+    /**
+     * PRIMARY DRIVE: fire `promoted_trigger` on the live `chess_statemachine`.
+     *
+     * Evidence chain (2026-09-05, no coordinates involved):
+     * - Our dest tap stages the queen-default promo Move in-game
+     *   (`cl5.l/m` with uci `d7d8q` observed live from the tap alone).
+     * - `promoscan` census of the live board controller shows exactly one
+     *   artboard (`chess_artboard`) with one state machine (`chess_statemachine`)
+     *   carrying `promoted_trigger` among 19 inputs.
+     * - Queen-only for now (engine underpromotions fall back to manual): the
+     *   staged move is always the queen default, and firing must never confirm
+     *   a rook/knight/bishop the engine actually chose. The verify loop was
+     *   taught 5-char UCI compare for promos, so a wrong piece can never pass
+     *   as applied.
+     * Every step is null-checked and exception-proofed; any miss aborts to the
+     * manual path. Must run on the main thread (Rive contract); handlePromotion
+     * already does. Returns true when the trigger was fired.
+     */
+    fun firePromoted(boardView: View): Boolean {
+        return try {
+            val controller = boardView.call0("getController", "getRiveController")
+                ?: boardView.field0("controller", "riveController")
+                ?: run {
+                    MainHook.log("rivepicker: fire no controller")
+                    return false
+                }
+            val sms = mutableListOf<Any>()
+            try {
+                val m = controller.javaClass.methods.firstOrNull {
+                    it.name == "getStateMachines" && it.parameterTypes.isEmpty()
+                }
+                val v = m?.invoke(controller)
+                if (v is List<*>) sms.addAll(v.filterNotNull())
+            } catch (_: Throwable) { }
+            if (sms.isEmpty()) {
+                // Shape fallback (same walk as the probe).
+                for (m in controller.javaClass.methods) {
+                    if (m.parameterTypes.isNotEmpty()) continue
+                    if (!m.returnType.name.contains("StateMachine")) continue
+                    try {
+                        when (val v = m.invoke(controller)) {
+                            is List<*> -> sms.addAll(v.filterNotNull())
+                            null -> {}
+                            else -> sms.add(v)
+                        }
+                    } catch (_: Throwable) { }
+                }
+            }
+            for (sm in sms) {
+                val smName = try {
+                    sm.javaClass.getMethod("getName").invoke(sm) as? String
+                } catch (_: Throwable) { null }
+                if (smName != "chess_statemachine") continue
+                val trig = try {
+                    sm.javaClass.methods.firstOrNull {
+                        it.name == "input" && it.parameterTypes.size == 1 &&
+                            it.parameterTypes[0] == String::class.java
+                    }?.invoke(sm, "promoted_trigger")
+                } catch (_: Throwable) { null } ?: continue
+                if (!trig.javaClass.name.contains("Trigger")) {
+                    MainHook.log("rivepicker: fire promoted_trigger is not a trigger: ${trig.javaClass.name}")
+                    continue
+                }
+                val fire = trig.javaClass.methods.firstOrNull {
+                    it.name.startsWith("fire") && it.parameterTypes.isEmpty()
+                } ?: continue
+                fire.invoke(trig)
+                MainHook.log("rivepicker: fired promoted_trigger on chess_statemachine")
+                return true
+            }
+            MainHook.log("rivepicker: fire no chess_statemachine/promoted_trigger")
+            false
+        } catch (t: Throwable) {
+            MainHook.log("rivepicker: fire failed: ${t.message?.take(120)}")
+            false
+        }
     }
 
     /** No-arg reflective call, null on any failure. */

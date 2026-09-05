@@ -50,7 +50,9 @@ object OverlayManager {
     private const val PREFS = "chessassist"
     private const val K_OX = "overlay_x"
     private const val K_OY = "overlay_y"
+    private const val K_OG = "overlay_gravity"
     private const val NO_POS = -100000
+    private const val DEFAULT_GRAVITY = Gravity.TOP or Gravity.CENTER_HORIZONTAL
 
     /** Called when the user taps the play button (wired by AssistService). */
     var onPlay: (() -> Unit)? = null
@@ -127,22 +129,25 @@ object OverlayManager {
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                     android.graphics.PixelFormat.TRANSLUCENT
                 ).apply {
+                    // Offsets are only meaningful together with the gravity they were
+                    // recorded under — restore the exact triple, or the banner jumps
+                    // to a corner on next start.
                     val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    val sx = prefs.getInt(K_OX, NO_POS)
-                    val sy = prefs.getInt(K_OY, NO_POS)
-                    if (sx != NO_POS && sy != NO_POS) {
-                        gravity = Gravity.TOP or Gravity.START
-                        x = sx
-                        y = sy
-                    } else {
-                        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    gravity = when {
+                        prefs.contains(K_OG) -> prefs.getInt(K_OG, DEFAULT_GRAVITY)
+                        // Pre-gravity records were always stored under START|TOP.
+                        prefs.contains(K_OX) -> Gravity.TOP or Gravity.START
+                        else -> DEFAULT_GRAVITY
                     }
+                    x = prefs.getInt(K_OX, 0)
+                    y = prefs.getInt(K_OY, 0)
                 }
                 root?.setOnTouchListener(DragTouchListener(wm, root, lp) { x, y ->
                     try {
                         appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                             .putInt(K_OX, x)
                             .putInt(K_OY, y)
+                            .putInt(K_OG, lp?.gravity ?: DEFAULT_GRAVITY)
                             .apply()
                     } catch (_: Throwable) {
                     }
@@ -158,7 +163,15 @@ object OverlayManager {
         }
     }
 
-    /** Drag-to-move (banner body only; button keeps its own clicks). */
+    /**
+     * Drag-to-move (banner body only; button keeps its own clicks).
+     *
+     * Offset-only dragging: WindowManager x/y are offsets from the gravity
+     * position, so a drag is just base + finger delta — gravity is NEVER touched
+     * after addView. The previous version re-anchored to absolute screen coords
+     * and flipped gravity mid-drag, which forced a full relayout every drag start
+     * (the visible jump) and lagged behind the finger.
+     */
     private class DragTouchListener(
         private val wm: WindowManager?,
         private val root: LinearLayout?,
@@ -195,12 +208,6 @@ object OverlayManager {
                             kotlin.math.abs(ev.rawY - downRawY) > slop)
                     ) {
                         dragging = true
-                        // Re-anchor to absolute screen coords on first drag frame.
-                        val loc = IntArray(2)
-                        v.getLocationOnScreen(loc)
-                        baseX = loc[0]
-                        baseY = loc[1]
-                        lp?.gravity = Gravity.TOP or Gravity.START
                     }
                     if (dragging) {
                         lp?.x = baseX + (ev.rawX - downRawX).toInt()

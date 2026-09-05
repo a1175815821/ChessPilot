@@ -49,6 +49,14 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
     @Volatile private var activeKey: String? = null
 
     /**
+     * Chain currently executing taps. A second play tap for the SAME pair while the
+     * first is still in flight (double-tap on the banner button) is ignored instead
+     * of interleaving a second gesture stream into the board — interleaved taps
+     * select garbage and the move silently fails ("tap twice, first does nothing").
+     */
+    @Volatile private var inFlightKey: String? = null
+
+    /**
      * @param cmdFen the FEN this move was computed for; if the board has moved on
      * (latest published fen differs), the tap is skipped — never play a stale move.
      * @param gapMs base gap select-tap → destination-tap; each move gets ±20% jitter.
@@ -73,6 +81,14 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
             MainHook.log("autoplay: attempt budget spent for $uci, staying quiet")
             return
         }
+        // Claim the flight synchronously: a second tap for the same pair arriving
+        // while the first is still resolving the view must not start a parallel
+        // gesture stream (check-and-set here; benign worst case is one overlap).
+        if (inFlightKey == key) {
+            MainHook.log("autoplay: chain already in flight for $uci, ignoring duplicate tap")
+            return
+        }
+        inFlightKey = key
         activeKey = key
 
         mainHandler.post {
@@ -83,15 +99,18 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                     "autoplay: no board view yet " +
                         "(controller=${BridgeAccess.boardController?.javaClass?.name})"
                 )
+                finishFlight(key)
                 return@post
             }
             if (view.width <= 0 || view.height <= 0) {
                 MainHook.log("autoplay: board view not laid out yet (${view.width}x${view.height})")
+                finishFlight(key)
                 return@post
             }
             try {
                 tapMove(view, uci, flipped, gap, startFen, cmdFen, key)
             } catch (t: Throwable) {
+                finishFlight(key)
                 MainHook.log("autoplay down failed: $t")
             }
         }
@@ -126,14 +145,20 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
     private fun isSuperseded(key: String, startFen: String?, uci: String): Boolean {
         if (activeKey != key) {
             MainHook.log("autoplay: superseded, dropping stale tap for $uci")
+            finishFlight(key)
             return true
         }
         val cur = BridgePublisher.lastAnalyzedFen
         if (startFen != null && cur != null && cur != startFen) {
             MainHook.log("autoplay: board moved on, dropping stale tap for $uci")
+            finishFlight(key)
             return true
         }
         return false
+    }
+
+    private fun finishFlight(key: String) {
+        if (inFlightKey == key) inFlightKey = null
     }
 
     /**
@@ -152,6 +177,7 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                 val applied = bridge.lastMoves.takeLast(3).any { it.take(4) == uci4 }
                 if (applied) {
                     MainHook.log("autoplay applied: $uci")
+                    finishFlight(key)
                     return@postDelayed
                 }
                 if (attempts < MAX_ATTEMPTS) {
@@ -160,6 +186,7 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                     return@postDelayed
                 }
                 MainHook.log("autoplay: giving up after $attempts attempts: $uci")
+                finishFlight(key)
                 BridgeClient.sendHelp(if (isPromo) "promotion" else "stuck", uci)
             } catch (t: Throwable) {
                 MainHook.log("autoplay verify failed: $t")

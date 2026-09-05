@@ -85,8 +85,13 @@ class BridgeProvider : ContentProvider() {
         val now = System.currentTimeMillis()
         val loopAgo = EngineLoop.lastLoopAt.let { if (it <= 0) -1 else (now - it) / 1000 }
         val posAgo = EngineLoop.lastPositionAt.let { if (it <= 0) -1 else (now - it) / 1000 }
-        val cursor = MatrixCursor(arrayOf("fen", "loopAgoSec", "posAgoSec", "engine"))
-        cursor.addRow(arrayOf(EngineLoop.currentFen, loopAgo, posAgo, EngineLoop.engineState))
+        val cursor = MatrixCursor(arrayOf("fen", "loopAgoSec", "posAgoSec", "engine", "spin"))
+        cursor.addRow(
+            arrayOf(
+                EngineLoop.currentFen, loopAgo, posAgo, EngineLoop.engineState,
+                if (OverlayManager.isSpinning()) 1 else 0
+            )
+        )
         return cursor
     }
 

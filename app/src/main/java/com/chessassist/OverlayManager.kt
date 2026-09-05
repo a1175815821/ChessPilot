@@ -42,8 +42,7 @@ object OverlayManager {
     private var titleTv: TextView? = null
     private var detailTv: TextView? = null
     private var playBtn: Button? = null
-    private var spinner: TextView? = null
-    private var spinFrame = 0
+    private var spinner: SpinView? = null
     private var added = false
     @Volatile private var initScheduled = false
 
@@ -84,14 +83,12 @@ object OverlayManager {
                     addView(titleTv)
                     addView(detailTv)
                 }
-                // ASCII frame spinner: a ProgressBar's indeterminate drawable never
-                // rendered in this overlay, and exotic glyphs may miss from the
-                // system font — plain ASCII frames have zero such risk.
-                spinner = TextView(appContext).apply {
-                    text = "|"
-                    setTextColor(Color.WHITE)
-                    textSize = 20f
-                    paint.isFakeBoldText = true
+                // Self-drawn arc spinner. History: a framework ProgressBar's
+                // indeterminate drawable never rendered in this overlay window, and
+                // an ASCII frame ticker (|/-\ every 150 ms) rendered but looked
+                // steppy with jittery widths. Canvas arcs + a vsync animator are
+                // smooth by construction and depend on neither drawables nor fonts.
+                spinner = SpinView(appContext).apply {
                     visibility = View.GONE
                 }
                 playBtn = Button(appContext).apply {
@@ -303,32 +300,61 @@ object OverlayManager {
         playBtn?.text = text
     }
 
-    private val spinFrames = arrayOf("|", "/", "-", "\\")
+    /** Fixed-size arc spinner: 270° round-capped arc rotating at 1 rev/s. */
+    private class SpinView(context: Context) : View(context) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = android.graphics.Paint.Style.STROKE
+            strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+        private val rect = android.graphics.RectF()
 
-    private val spinTick = object : Runnable {
-        override fun run() {
-            val v = spinner ?: return
-            if (v.visibility != View.VISIBLE) return
-            spinFrame = (spinFrame + 1) % spinFrames.size
-            v.text = spinFrames[spinFrame]
-            main.postDelayed(this, 150)
+        // Animated property (ObjectAnimator reflection target must stay).
+        @Suppress("unused")
+        var sweep = 0f
+            set(v) {
+                field = v
+                invalidate()
+            }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            val density = resources.displayMetrics.density
+            paint.strokeWidth = 3f * density
+            val pad = paint.strokeWidth
+            rect.set(pad, pad, w - pad, h - pad)
+        }
+
+        override fun onDraw(c: android.graphics.Canvas) {
+            c.drawArc(rect, sweep, 270f, false, paint)
         }
     }
 
+    private var spinAnim: android.animation.ObjectAnimator? = null
+
     private fun setSpinner(spinning: Boolean) {
         val v = spinner ?: return
-        main.removeCallbacks(spinTick)
+        spinAnim?.cancel()
+        spinAnim = null
         if (spinning) {
             v.visibility = View.VISIBLE
-            main.post(spinTick)
+            spinAnim = android.animation.ObjectAnimator.ofFloat(v, "sweep", 0f, 360f).apply {
+                duration = 1000L
+                repeatCount = android.animation.ObjectAnimator.INFINITE
+                interpolator = android.view.animation.LinearInterpolator()
+                start()
+            }
         } else {
             v.visibility = View.GONE
         }
     }
 
+    /** 1 when the spinner is currently shown (adb diagnostics). */
+    fun isSpinning(): Boolean = spinner?.visibility == View.VISIBLE
+
     fun release() {
         main.post {
-            try { main.removeCallbacks(spinTick) } catch (_: Throwable) {}
+            try { spinAnim?.cancel() } catch (_: Throwable) {}
+            spinAnim = null
             try { root?.let { wm?.removeView(it) } } catch (_: Throwable) {}
             root = null
             titleTv = null

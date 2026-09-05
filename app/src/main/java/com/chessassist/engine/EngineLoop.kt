@@ -366,9 +366,14 @@ object EngineLoop {
 
     // ------------------------------------------------------------------ loop
 
+    /** Exact initial position: consecutive lessons often restart here. */
+    private const val STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
     private fun runLoop() {
         var restarts = 0
         var lastAnalysedFen: String? = null
+        var prevFen: String? = null
+        var lastSkippedFen: String? = null
         while (running.get()) {
             lastLoopAt = System.currentTimeMillis()
             try {
@@ -394,7 +399,30 @@ object EngineLoop {
                 val (fen, user, turn) = synchronized(pendingLock) {
                     Triple(pendingFen, pendingUserColor, pendingTurnColor)
                 }
-                if (fen == null || fen == lastAnalysedFen) {
+                if (fen == null) {
+                    maybeNoteStale()
+                    Thread.sleep(60)
+                    continue
+                }
+                // Game boundary BEFORE the idle check: a fresh startpos after any
+                // other position means a NEW game. The idle check below would match
+                // lastAnalysedFen from the previous game and the white opening would
+                // be silently ignored forever (same class of stuck as cross-game
+                // userColor, but engine-side and therefore never self-healing).
+                // (Caught by the back-to-back startpos test, not by review.)
+                if (fen == STARTPOS_FEN && prevFen != STARTPOS_FEN) {
+                    lastAnalysedFen = null
+                    analysedFen = null
+                    lastBestMove = null
+                    lastBestMoveAt = 0
+                    lastScoreCp = null
+                    lastScoreStm = null
+                    lastScoreUser = null
+                    lastSkippedFen = null
+                    note("新开局，已清空上局残留")
+                }
+                prevFen = fen
+                if (fen == lastAnalysedFen) {
                     maybeNoteStale()
                     Thread.sleep(60)
                     continue
@@ -423,10 +451,15 @@ object EngineLoop {
                 val u = user?.lowercase() ?: turn?.lowercase()
                 val userIsToMove = t == u
                 // Only analyse when it's the user's move (their decision is what we assist).
+                // Deliberately NOT marking lastAnalysedFen here: a skip decided on
+                // lagging turn/user fields must be re-evaluated when corrected values
+                // arrive (same fen). Marking it poisoned the position forever.
                 if (!userIsToMove && user != null) {
-                    lastAnalysedFen = fen
-                    analysedFen = fen
-                    OverlayManager.clear("等待对手走棋…", lastConclusionLine())
+                    if (fen != lastSkippedFen) {
+                        lastSkippedFen = fen
+                        OverlayManager.clear("等待对手走棋…", lastConclusionLine())
+                    }
+                    Thread.sleep(200)
                     continue
                 }
 

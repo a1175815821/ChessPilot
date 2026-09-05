@@ -46,11 +46,27 @@ object BridgePublisher {
     @Synchronized
     fun resetForNewGame() {
         lastAnalyzedFen = null
+        lastPublishKey = null
         lastBestMove = null
         lastBestMoveFen = null
         lastBestMoveAt = 0
         clearDrawn()
         MainHook.log("new game: sticky state reset")
+    }
+
+    /**
+     * Partial reset for a rebuilt board controller: force the CURRENT position to
+     * republish (lesson retries reconstruct identical setups that change-detection
+     * would otherwise swallow), but KEEP the last bestmove so the painter can
+     * immediately redraw it on the fresh board without waiting for re-analysis.
+     * Full resetForNewGame is reserved for the exact-startpos new-game signal.
+     */
+    @Synchronized
+    fun resetPublishState() {
+        lastAnalyzedFen = null
+        lastPublishKey = null
+        clearDrawn()
+        MainHook.log("board rebuilt: republish armed")
     }
 
     // Trigger accounting for stuck-game diagnosis (see StateBridge call sites).
@@ -91,15 +107,24 @@ object BridgePublisher {
         }
     }
 
+    // lastAnalyzedFen stays FEN-only: ArrowPainter's staleness gate and autoplay
+    // freshness compare against move FENs, so this must never become a composite.
+    // Turn/user corrections travel via a SEPARATE publish key below.
+    @Volatile private var lastPublishKey: String? = null
+
     fun publishSnapshot(fen: String, userColor: String?, turnColor: String?, moves: List<String>) {
-        // Pure change detection: hooks fire at frame rate (render polling, ctor copies)
-        // with the SAME state. Republishing it (even throttled) poisons lastAnalyzedFen,
-        // forces useless re-analysis, and resurrects stale arrows. Same fen ⇒ silence.
+        // Change detection on (fen, turn, user): hooks fire at frame rate (render
+        // polling, ctor copies) with the SAME state — same triple ⇒ silence. But a
+        // turn/user correction for an unchanged FEN (lagging fields catching up)
+        // MUST be republished, or the companion's skip decision on the old triple
+        // sticks forever with no new trigger to revisit it.
         // (Companion restarts are covered by BridgeClient's reconnect flush.)
-        if (fen == lastAnalyzedFen) {
+        val key = "$fen|${turnColor ?: "?"}|${userColor ?: "?"}"
+        if (key == lastPublishKey) {
             pubDup++
             return
         }
+        lastPublishKey = key
         lastAnalyzedFen = fen
         try {
             BridgeClient.sendPosition(fen, userColor, turnColor, moves)

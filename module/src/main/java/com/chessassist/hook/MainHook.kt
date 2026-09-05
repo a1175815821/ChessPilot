@@ -255,6 +255,11 @@ class MainHook : IXposedHookLoadPackage {
             XposedBridge.hookAllConstructors(clz, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     try {
+                        // A fresh board controller means a fresh board context (new
+                        // game / lesson retry): re-arm publishing so a repeated setup
+                        // republishes instead of being deduped away. Partial reset
+                        // on purpose — the last bestmove is kept for instant redraw.
+                        BridgePublisher.resetPublishState()
                         RiveViewFinder.onControllerCreated(param.thisObject)
                     } catch (t: Throwable) {
                         log("rive view discovery failed: $t")

@@ -98,9 +98,17 @@ class StateBridge {
         return "$placement $turn $castling $ep $half $fullmove"
     }
 
+    @Volatile private var lastRenderProcessAt: Long = 0
+
     /** Called when the Rive controller has rendered the state (g() hook). */
     fun onRenderedState(state: Any) {
         BridgeAccess.lastState = state
+        // Render polling can fire dozens of times per second on the UI thread, each
+        // doing full reflection extraction. Throttle the heavy part: states change
+        // far slower than frames (ctor path is unthrottled and covers new states).
+        val now = System.currentTimeMillis()
+        if (now - lastRenderProcessAt < 200) return
+        lastRenderProcessAt = now
         onGameState(state, "render") // re-publish: rendered state is authoritative for the UI
     }
 

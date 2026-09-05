@@ -46,6 +46,16 @@ object EngineLoop {
     private var appContext: Context? = null
     private var worker: Thread? = null
 
+    /**
+     * Lifecycle generation (B4): start()/stop() run on the main thread, but an old
+     * worker stuck in blocking I/O (readLine is not interruptible) can outlive
+     * stop(). Without this, a quick stop→start lets the stale worker observe
+     * running==true again and continue as a DUPLICATE loop — second engine process,
+     * duplicate bestmove pushes, battery drain. Every loop/checkpoint verifies it
+     * still owns the current generation.
+     */
+    @Volatile private var workerGen = 0L
+
     // Latest position, guarded by worker-thread confinement (only worker reads/writes).
     @Volatile var currentFen: String? = null
         private set
@@ -105,11 +115,15 @@ object EngineLoop {
         engineState = STATE_STARTING
         lastError = null
         note("正在启动引擎…")
-        worker = Thread(::runLoop, "engine-loop").apply { start() }
+        val gen = ++workerGen
+        worker = Thread({ runLoop(gen) }, "engine-loop").apply { start() }
     }
 
     fun stop() {
         running.set(false)
+        // Bump FIRST: a stale worker must fail its next generation check even if
+        // someone restarts the service before it finishes unwinding.
+        workerGen++
         note("正在停止…")
         try { client?.stop() } catch (_: Throwable) {}
         client = null
@@ -369,12 +383,13 @@ object EngineLoop {
     /** Exact initial position: consecutive lessons often restart here. */
     private const val STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
-    private fun runLoop() {
+    private fun runLoop(gen: Long) {
         var restarts = 0
         var lastAnalysedFen: String? = null
         var prevFen: String? = null
         var lastSkippedFen: String? = null
-        while (running.get()) {
+        fun isStale(): Boolean = gen != workerGen
+        while (running.get() && !isStale()) {
             lastLoopAt = System.currentTimeMillis()
             try {
                 // Local snapshot: stop() (main thread) nulls `client` and destroys
@@ -384,12 +399,19 @@ object EngineLoop {
                 // without it the loop would spin analyse()->null forever.
                 var c = client
                 if (c == null || !c.isRunning()) {
+                    if (isStale()) return
                     if (c != null) {
                         try { c.stop() } catch (_: Throwable) {}
                         client = null
                     }
                     engineState = STATE_STARTING
                     c = StockfishClient(appContext!!).also { it.start() }
+                    // Lost the race with a newer generation while starting (handshake
+                    // takes seconds): shut our engine down, don't clobber its client.
+                    if (isStale()) {
+                        try { c.stop() } catch (_: Throwable) {}
+                        return
+                    }
                     client = c
                     restarts = 0
                     engineState = STATE_RUNNING
@@ -459,6 +481,10 @@ object EngineLoop {
                         lastSkippedFen = fen
                         OverlayManager.clear("等待对手走棋…", lastConclusionLine())
                     }
+                    // Reachable even when positions keep arriving: a perpetual
+                    // opponent-turn (bot stuck, lesson fetching) must still age
+                    // into the stale annotation instead of looking like waiting.
+                    maybeNoteStale()
                     Thread.sleep(200)
                     continue
                 }
@@ -466,6 +492,9 @@ object EngineLoop {
                 OverlayManager.showThinking(BridgeSettings.autoPlayEnabled)
                 val best = c.analyse(fen, BridgeSettings.movetimeMs, BridgeSettings.searchDepth)
                 lastLoopAt = System.currentTimeMillis()
+                // Stale generation waking from a blocking analyse: never publish —
+                // the current worker already owns this position (or a newer one).
+                if (isStale()) return
                 if (best != null) {
                     lastAnalysedFen = fen
                     analysedFen = fen
@@ -497,7 +526,8 @@ object EngineLoop {
                 // Any failure after stop() is a shutdown race (stop() interrupted
                 // our sleep or destroyed the engine process under us): exit
                 // quietly instead of flashing ERROR + STATE_FAILED on every stop.
-                if (!running.get()) {
+                // Same for a superseded generation after a quick stop→start.
+                if (!running.get() || isStale()) {
                     Log.i(TAG, "loop stopped (${t.javaClass.simpleName})")
                     return
                 }
@@ -512,14 +542,14 @@ object EngineLoop {
                     try {
                         Thread.sleep(30_000)
                     } catch (ie: InterruptedException) {
-                        if (!running.get()) return
+                        if (!running.get() || isStale()) return
                     }
                     restarts = 0
                 } else {
                     try {
                         Thread.sleep(1_000L * restarts)
                     } catch (ie: InterruptedException) {
-                        if (!running.get()) return
+                        if (!running.get() || isStale()) return
                     }
                 }
                 if (running.get()) engineState = STATE_STARTING

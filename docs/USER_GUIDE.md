@@ -115,6 +115,14 @@ cl5.s() 画原生箭头 ◄── BridgeClient ◄──Socket── bestmove �
 - **Xposed 桩**：`tools/xapi` 的 `XposedBridge.hookMethod` 返回值必须是单个 `Unhook`
   （真机 API 如此；写成 `Set` 编译能过、真机 `NoSuchMethodError`，且会中断整个初始化）。
   桩改完要重打 `module/libs` 和 `tools/xapi` 下的两个 stub jar。
+- **横幅写屏纪律**：第二行颜色是状态的一部分——`showBestMove` 上色，`showThinking`/
+  `showStatus`/`clear` 一律复位灰，`正在计算…` 不得带胜率色（B1）。
+- **clear 守卫名单**：`推荐/自动走棋中/等待走棋中/象棋助手/局面停滞` 可替换，
+  `需要手动操作` 永久保护（B2：停滞横幅曾导致对局恢复后仍显示旧文案）。
+- **Fallback 正则无 `^` 锚点**（有锚点时内嵌 FEN 永远命中不了，兜底名存实亡），
+  遍历覆盖 `Iterable`（含 Set）与数组（B3，真 Java 引擎验证过新旧两种行为）。
+- **生命周期世代号**：`EngineLoop.workerGen` 与 `BridgeServer.serverGen`，快速启停时
+  老 worker/accept 线程自动退出，不再出现双引擎进程与重复 bestmove（B4，真机快启停三轮验证）。
 - **NNUE**：`nn-b1a57edbea57.nnue`（65,429,575 字节）+ `nn-baff1ede1f90.nnue`
   （3,480,122 字节）INCBIN 编进二进制。`tools/fetch_stockfish.sh` 带字节数校验，
   短了就重下——之前库里的 10MB 截断文件让引擎启动即崩，查了很久。

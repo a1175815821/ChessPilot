@@ -17,8 +17,14 @@ object ViewModelFallback {
 
     @Volatile private var lastScanAt: Long = 0
 
+    // NOTE: no `^` anchor on purpose. Without MULTILINE, `^` matches only at input
+    // position 0, which silently disabled the entire documented purpose of this
+    // fallback ("FENs appear embedded in longer strings" — they do, e.g. in
+    // data-class toStrings like "ChessBotMatch(fen=..."). With `^`, findAll could
+    // only ever match whole-string FENs, so after an update that renames the primary
+    // model classes this fallback mined nothing and the bridge stayed dark.
     private val FEN_RE = Regex(
-        "^([pnbrqkPNBRQK1-8]{1,8}/){7}[pnbrqkPNBRQK1-8]{1,8}\\s[wb]\\s(-|[KQkq]{1,4})(\\s(-|[a-h][36]))?(\\s\\d+)?(\\s\\d+)?"
+        "([pnbrqkPNBRQK1-8]{1,8}/){7}[pnbrqkPNBRQK1-8]{1,8}\\s[wb]\\s(-|[KQkq]{1,4})(\\s(-|[a-h][36]))?(\\s\\d+)?(\\s\\d+)?"
     )
 
     fun hook(lpparam: XC_LoadPackage.LoadPackageParam, remap: Remap, bridge: StateBridge) {
@@ -65,7 +71,10 @@ object ViewModelFallback {
                     bridge.acceptExternalFen(m.value)
                 }
             }
-            is List<*> -> obj.forEach { scan(it, bridge, depth + 1) }
+            // Iterable covers List AND Set (a Set would otherwise fall into the
+            // reflection branch, hit the java.* guard, and be skipped entirely).
+            is Iterable<*> -> obj.forEach { scan(it, bridge, depth + 1) }
+            is Array<*> -> obj.forEach { scan(it, bridge, depth + 1) }
             is Map<*, *> -> obj.forEach { (k, v) -> scan(k, bridge, depth + 1); scan(v, bridge, depth + 1) }
             else -> {
                 val clz = obj.javaClass

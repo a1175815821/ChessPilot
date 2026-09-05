@@ -230,6 +230,8 @@ object OverlayManager {
         }
     }
 
+    private val defaultDetailColor = Color.parseColor("#BDBDBD")
+
     /** Core writer: persistent two-line banner. */
     @Volatile private var lastTitle: String = ""
     fun showStatus(title: String, detail: String = "") {
@@ -238,6 +240,7 @@ object OverlayManager {
             titleTv?.text = title
             detailTv?.text = detail
             detailTv?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
+            detailTv?.setTextColor(defaultDetailColor)
             setSpinner(false)
             setPlayButton(false, "走棋")
         }
@@ -253,6 +256,9 @@ object OverlayManager {
             titleTv?.text = lastTitle
             detailTv?.text = "正在计算…"
             detailTv?.visibility = View.VISIBLE
+            // B1: "正在计算…" is not a verdict — reset the win-rate color that a
+            // previous showBestMove left on this line, or users read green as 优势.
+            detailTv?.setTextColor(defaultDetailColor)
             setSpinner(autoplay)
             setPlayButton(false, if (autoplay) "自动" else "走棋")
         }
@@ -280,15 +286,20 @@ object OverlayManager {
     /** Opponent's turn (or idle): keep the banner resident, show last conclusion. */
     fun clear(reason: String = "等待对手走棋…", detail: String = "") {
         main.post {
-            // Don't wipe a fresher state that arrived out of order.
+            // Don't wipe a fresher state that arrived out of order. "局面停滞" is
+            // deliberately replaceable (B2): it is written by the idle annotator,
+            // and any live skip means the game moved on. "需要手动操作" stays
+            // protected — explicit user guidance must never be auto-overwritten.
             val cur = titleTv?.text.toString()
             if (cur.startsWith("推荐") || cur.startsWith("自动走棋中") ||
-                cur.startsWith("等待走棋中") || cur.startsWith("象棋助手")
+                cur.startsWith("等待走棋中") || cur.startsWith("象棋助手") ||
+                cur.startsWith("局面停滞")
             ) {
                 lastTitle = reason
                 titleTv?.text = reason
                 detailTv?.text = detail
                 detailTv?.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
+                detailTv?.setTextColor(defaultDetailColor)
                 setSpinner(false)
                 setPlayButton(false, "走棋")
             }

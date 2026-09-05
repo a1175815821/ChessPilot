@@ -40,6 +40,15 @@ object BridgeServer {
     private var server: ServerSocket? = null
     private var acceptThread: Thread? = null
     private var senderThread: Thread? = null
+
+    /**
+     * Lifecycle generation (B4, twin of EngineLoop.workerGen): start()/stop() run on
+     * the main thread, but an old accept thread blocked in native accept() can
+     * outlive stop(). On a quick stop→start it would otherwise accept on the NEW
+     * server socket next to the new thread. Loops and post-accept handling bail
+     * when the generation moves on.
+     */
+    @Volatile private var serverGen = 0L
     private val hookOutputs = CopyOnWriteArrayList<OutputStream>()
     private val sendLock = Any()
     private var pendingPush: JSONObject? = null
@@ -67,11 +76,12 @@ object BridgeServer {
             EngineLoop.onBridgeError("桥端口 $PORT 被占用：$t")
             return
         }
-        acceptThread = Thread(::acceptLoop, "bridge-accept").apply {
+        val gen = ++serverGen
+        acceptThread = Thread({ acceptLoop(gen) }, "bridge-accept").apply {
             isDaemon = true
             start()
         }
-        senderThread = Thread(::senderLoop, "bridge-send").apply {
+        senderThread = Thread({ senderLoop(gen) }, "bridge-send").apply {
             isDaemon = true
             start()
         }
@@ -79,6 +89,9 @@ object BridgeServer {
 
     fun stop() {
         running.set(false)
+        // Bump FIRST so stale threads fail their next generation check even if a
+        // restart flips running back to true before they finish unwinding.
+        serverGen++
         synchronized(sendLock) { (sendLock as java.lang.Object).notifyAll() }
         try { server?.close() } catch (_: Throwable) {}
         server = null
@@ -107,10 +120,11 @@ object BridgeServer {
         }
     }
 
-    private fun senderLoop() {
-        while (running.get()) {
+    private fun senderLoop(gen: Long) {
+        fun isStale(): Boolean = gen != serverGen
+        while (running.get() && !isStale()) {
             val obj: JSONObject? = synchronized(sendLock) {
-                while (running.get() && pendingPush == null) {
+                while (running.get() && !isStale() && pendingPush == null) {
                     try {
                         (sendLock as java.lang.Object).wait()
                     } catch (_: InterruptedException) {
@@ -122,6 +136,7 @@ object BridgeServer {
                 o
             }
             if (obj == null) continue
+            if (isStale()) return
             val bytes = try {
                 (obj.toString() + "\n").toByteArray(Charsets.UTF_8)
             } catch (_: Throwable) {
@@ -166,10 +181,17 @@ object BridgeServer {
 
     // ------------------------------------------------------------------ server
 
-    private fun acceptLoop() {
-        while (running.get()) {
+    private fun acceptLoop(gen: Long) {
+        fun isStale(): Boolean = gen != serverGen
+        while (running.get() && !isStale()) {
             try {
                 val sock = server?.accept() ?: break
+                // Woke from a pre-restart accept on the NEW socket: hand it back,
+                // don't serve it from a stale thread (would double-register outputs).
+                if (isStale()) {
+                    try { sock.close() } catch (_: Throwable) {}
+                    return
+                }
                 lastHookSeenAt = System.currentTimeMillis()
                 Log.i(TAG, "hook connected: ${sock.remoteSocketAddress}")
                 EngineLoop.onHookConnected()
@@ -179,7 +201,7 @@ object BridgeServer {
                 }
                 Unit
             } catch (t: Throwable) {
-                if (running.get()) Log.w(TAG, "accept: $t")
+                if (running.get() && !isStale()) Log.w(TAG, "accept: $t")
             }
         }
     }

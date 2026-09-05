@@ -369,12 +369,39 @@ object PromotionPicker {
         try {
             val sigs = clz.declaredMethods
                 .filter { !it.isSynthetic }
-                .map { "${it.name}:${it.returnType.name.substringAfterLast('.')}" }
-                .sorted().joinToString(" ").take(600)
+                .map { m ->
+                    val ps = m.parameterTypes.joinToString(",") { it.name.substringAfterLast('.') }
+                    "${m.name}($ps):${m.returnType.name.substringAfterLast('.')}"
+                }
+                .sorted().joinToString(" ").take(900)
             MainHook.log("promotion: L2s $tag ${clz.name} methods=[$sigs]")
         } catch (_: Throwable) {
             MainHook.log("promotion: L2s inventory failed for ${clz.name}")
         }
+    }
+
+    /**
+     * Sample probe on one node: invoke all no-arg scalar getters (boolean, numbers,
+     * strings) and log name=value. Obfuscated position/state accessors show up here
+     * by value (e.g. a cluster of 4 floats = bounds). Called sparingly (2/host).
+     */
+    private fun sampleScalars(node: Any, tag: String) {
+        try {
+            val parts = mutableListOf<String>()
+            for (m in noArgMethods(node)) {
+                if (parts.size >= 14) break
+                val rt = m.returnType
+                val isScalar = rt.isPrimitive || rt == String::class.java ||
+                    Number::class.java.isAssignableFrom(rt) ||
+                    java.lang.Boolean::class.java.isAssignableFrom(rt)
+                if (!isScalar || rt == Void.TYPE) continue
+                try {
+                    val v = m.invoke(node)
+                    parts.add("${m.name}=$v")
+                } catch (_: Throwable) { }
+            }
+            MainHook.log("promotion: L2s sample $tag ${node.javaClass.name} scalars=[${parts.joinToString(" ").take(400)}]")
+        } catch (_: Throwable) { }
     }
 
     /**
@@ -650,20 +677,18 @@ object PromotionPicker {
                 if (v != null) cands.add(v)
             } catch (_: Throwable) { }
         }
-        // SemanticsNode shape: exposes window bounds (*Rect) + children (List).
-        // Non-matches are inventoried too: their method list is what tells us the
-        // true shape when the guess is wrong (live: `rzt` was rejected here).
+        // Live truth: the owner exposes exactly one object (`rzt`), which carries
+        // children lists but NO *Rect method — bounds must be discovered deeper
+        // (nested object or scalar cluster). Accept any list-bearing candidate as
+        // the walk root; the DFS + sample probes below reveal the rest.
         for (c in cands) {
             val ms = noArgMethods(c)
             val hasBounds = ms.any {
                 it.returnType == Rect::class.java || it.returnType.name.endsWith("Rect")
             }
             val hasKids = ms.any { it.returnType == java.util.List::class.java }
-            if (hasBounds && hasKids) {
-                logMethodsOnce(c.javaClass, "node")
-                return c
-            }
             logMethodsOnce(c.javaClass, "node?bounds=$hasBounds/kids=$hasKids")
+            if (hasKids) return c
         }
         MainHook.log("promotion: L2s root candidates=${cands.size}")
         return null
@@ -713,6 +738,22 @@ object PromotionPicker {
                     continue
                 }
                 val root = host.rootView ?: host
+                // One-time per host: scalar sample of the root + kid-class inventory
+                // pins down the obfuscated position/state accessors by value.
+                sampleScalars(rootNode, "root")
+                try {
+                    val firstKids = kidsOfShape(rootNode)
+                    MainHook.log(
+                        "promotion: L2s root kids=${firstKids.size} " +
+                            "first=${firstKids.firstOrNull()?.javaClass?.name}"
+                    )
+                    firstKids.firstOrNull()?.let {
+                        logMethodsOnce(it.javaClass, "kid")
+                        sampleScalars(it, "kid0")
+                    }
+                } catch (t: Throwable) {
+                    MainHook.log("promotion: L2s kid sample failed: ${t.message?.take(100)}")
+                }
                 var n = 0
                 var logged = 0
                 fun dfs(node: Any, depth: Int) {

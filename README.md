@@ -34,3 +34,8 @@ tools/fetch_stockfish.sh        # 需要 git + curl（Windows 下等价手动执
 
 `work/`、 dex/apks、`.cxx`、`build/`、`dist/`、`stockfish/` 源码网文件均不进库
 （见 `.gitignore`），全部可再生：APK 解包 → `remap.py` → 引擎 `fetch` → 构建签名。
+
+## 许可证
+
+GPL-3.0（见 [`LICENSE`](LICENSE)）。注意：Stockfish 本体同样 GPL-3.0，
+分发二进制必须附带源码获取方式——本仓库即源码（引擎取自官方 tag + 构建脚本全开源）。

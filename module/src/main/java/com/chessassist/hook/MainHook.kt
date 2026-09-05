@@ -92,8 +92,6 @@ class MainHook : IXposedHookLoadPackage {
             hookBoardController(lpparam)
             hookRiveViews(lpparam)
             ViewModelFallback.hook(lpparam, remap, bridge)
-            PromoTrace.install(lpparam, remap)
-            RivePicker.install(lpparam)
             CommandLoop.configure(remap, bridge)
         } catch (t: Throwable) {
             log("initAfterContext failed: $t")

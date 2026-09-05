@@ -18,11 +18,10 @@ import kotlin.math.abs
  *       white: x = left + file*cell,            y = top + (7-(rank-1))*cell
  *       black: x = left + (7-file)*cell,        y = top + (rank-1)*cell
  *
- * Promotion: tap destination → app opens the promotion picker overlay → the
- * adaptive [PromotionPicker] driver taps the real queen button (View tree, then
- * Compose semantics, both fully logged), falling back to the board-relative guess
- * (one cell toward the board center from the destination square) only when the
- * picker exposes nothing scannable. The move is then verified via the state bridge.
+ * Promotion is manual-only, deliberately: the picker is Rive-drawn (no Views,
+ * no window, no semantics to drive) and every coordinate scheme proved fragile
+ * across files and resolutions. A promotion UCI (5 chars) never taps — it goes
+ * straight to [requestManualPromotion]: companion banner + in-game toast.
  */
 class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
@@ -38,12 +37,6 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
     private var attemptKey: String? = null
     private var attempts = 0
-
-    /**
-     * Clickable-set snapshot taken before the select-tap of a promotion move, so the
-     * picker driver can diff what the destination-tap added (see PromotionPicker).
-     */
-    private var prePromoKeys: Set<String> = emptySet()
 
     /**
      * Generation of the currently-live tap chain. A new (fen,move) command supersedes
@@ -73,6 +66,11 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
             return
         }
         if (uci.length < 4) return
+        // Promotion (5-char UCI): manual-only, no taps, no picker driving.
+        if (uci.length >= 5) {
+            requestManualPromotion(uci)
+            return
+        }
         val flipped = bridge.lastUserColor == "b"
         val gap = (gapMs ?: DEFAULT_GAP_MS).coerceIn(150L, 1500L)
         val startFen = latest
@@ -127,30 +125,16 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
     ) {
         val from = uci.substring(0, 2)
         val to = uci.substring(2, 4)
-        val promo = uci.getOrNull(4)?.lowercaseChar()
 
         attempts++
         // Human-like gap with ±20% jitter; Duolingo highlights the selected square here.
         val jittered = (gap * (0.8 + rand.nextDouble() * 0.4)).toLong()
-        // Promotion only: snapshot the clickable set BEFORE the select-tap so the
-        // picker driver can diff what the destination-tap opens (runs on UI thread),
-        // and arm the PromoTrace window (covers 3 attempts + the user's manual tap).
-        prePromoKeys = if (promo != null) {
-            try { PromoTrace.arm() } catch (_: Throwable) { }
-            // Census the live Rive controller while the picker is about to open:
-            // artboards, state machines, input names/values, game listeners.
-            try { RivePicker.probeRive("arm") } catch (_: Throwable) { }
-            try { PromotionPicker.snapshotKeys(view) } catch (_: Throwable) { emptySet() }
-        } else emptySet()
         tapSquare(view, from, flipped)
         mainHandler.postDelayed({
             try {
                 if (isSuperseded(key, startFen, uci)) return@postDelayed
                 tapSquare(view, to, flipped)
-                if (promo != null) {
-                    handlePromotion(view, uci, to, flipped, startFen, key)
-                }
-                scheduleAppliedCheck(view, uci, flipped, gap, startFen, cmdFen, promo != null, key)
+                scheduleAppliedCheck(view, uci, flipped, gap, startFen, cmdFen, key)
             } catch (t: Throwable) { MainHook.log("autoplay release failed: $t") }
         }, jittered)
         MainHook.log("autoplay performed: $uci (attempt $attempts/$MAX_ATTEMPTS, gap ${jittered}ms)")
@@ -181,18 +165,39 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
      * give up to explicit manual guidance instead of dying silent (which used to
      * deadlock the whole game: same position, no retrigger, no next move ever).
      */
+    /**
+     * Promotion is manual-only: announce on the companion banner + an in-game
+     * toast, tap nothing. Deliberately stable — no picker driving of any kind.
+     */
+    private fun requestManualPromotion(uci: String) {
+        MainHook.log("autoplay: promotion $uci — manual pick requested, no taps")
+        BridgeClient.sendHelp("promotion", uci)
+        showHelpToast("升变请手动选皇后（$uci）")
+    }
+
+    /**
+     * The companion banner lives in the OTHER app, invisible mid-game — mirror
+     * the plea as a system toast inside Duolingo itself (text toasts need no
+     * overlay permission).
+     */
+    private fun showHelpToast(msg: String) {
+        try {
+            val ctx = BridgeAccess.context ?: return
+            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+        } catch (t: Throwable) {
+            MainHook.log("autoplay: toast failed: ${t.message?.take(80)}")
+        }
+    }
+
     private fun scheduleAppliedCheck(
         view: View, uci: String, flipped: Boolean, gap: Long,
-        startFen: String?, cmdFen: String?, isPromo: Boolean, key: String
+        startFen: String?, cmdFen: String?, key: String
     ) {
         mainHandler.postDelayed({
             try {
                 if (isSuperseded(key, startFen, uci)) return@postDelayed
-                // Promotions compare the FULL 5-char UCI: lastMoves records the
-                // applied piece (g7g8r vs g7g8q), and a wrong piece must never
-                // pass as applied (the Rive drive only ever confirms queen).
-                val want = if (isPromo) uci.take(5) else uci.take(4)
-                val applied = bridge.lastMoves.takeLast(3).any { it.take(want.length) == want }
+                val uci4 = uci.take(4)
+                val applied = bridge.lastMoves.takeLast(3).any { it.take(4) == uci4 }
                 if (applied) {
                     MainHook.log("autoplay applied: $uci")
                     finishFlight(key)
@@ -205,92 +210,12 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
                 }
                 MainHook.log("autoplay: giving up after $attempts attempts: $uci")
                 finishFlight(key)
-                val code = if (isPromo) "promotion" else "stuck"
-                BridgeClient.sendHelp(code, uci)
-                // The companion banner lives in the OTHER app, invisible mid-game.
-                // Mirror the plea as a system toast inside Duolingo itself (text
-                // toasts need no overlay permission).
-                try {
-                    val msg = if (isPromo) "升变请手动选皇后（$uci）" else "请手动走 $uci"
-                    val ctx = BridgeAccess.context
-                    if (ctx != null) {
-                        android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
-                        MainHook.log("autoplay: toasted help in game")
-                    }
-                } catch (t: Throwable) {
-                    MainHook.log("autoplay: toast failed: ${t.message?.take(80)}")
-                }
+                BridgeClient.sendHelp("stuck", uci)
+                showHelpToast("请手动走 $uci")
             } catch (t: Throwable) {
                 MainHook.log("autoplay verify failed: $t")
             }
         }, gap + 1500)
-    }
-
-    /**
-     * After tapping the destination square, the app shows the promotion picker.
-     * The adaptive driver ([PromotionPicker]) taps the real queen button when it
-     * can find one (View-tree text match, or a new same-row button cluster from
-     * the before/after diff). Fixed coordinates were tried and REMOVED (d8 hit,
-     * g8 picked the rook — the panel clamps per file, and any constant dies on
-     * the next layout/resolution): when nothing is found we tap nothing and let
-     * the user pick, while the verify loop + [PromoTrace] record everything for
-     * the direct-API drive. 800 ms: the old 350 ms fired before the picker
-     * finished opening. Bounded retry stays unified in scheduleAppliedCheck.
-     */
-    private fun handlePromotion(
-        view: View, uci: String, toSquare: String, flipped: Boolean, startFen: String?, key: String
-    ) {
-        mainHandler.postDelayed({
-            try {
-                if (isSuperseded(key, startFen, "promo@$toSquare")) return@postDelayed
-                val tapped = try {
-                    PromotionPicker.resolveAndTap(view, prePromoKeys, ::tapViewAt)
-                } catch (t: Throwable) {
-                    MainHook.log("promotion driver threw: ${t.message?.take(100)}")
-                    false
-                }
-                if (!tapped) {
-                    // Signal ladder: one Rive hypothesis per retry round (queen
-                    // engine-moves only; anything else waits for manual).
-                    // Round outcomes are judged by the verify loop; the user is
-                    // asked to also report what they SEE (panel closed? applied?).
-                    val fired = if (uci.length == 5 && uci[4].lowercaseChar() == 'q') {
-                        try {
-                            MainHook.log("promotion: signal round $attempts for $uci")
-                            RivePicker.driveRound(view, attempts)
-                        } catch (t: Throwable) {
-                            MainHook.log("promotion drive threw: ${t.message?.take(100)}")
-                            false
-                        }
-                    } else {
-                        MainHook.log("promotion: non-queen $uci — waiting for manual pick")
-                        false
-                    }
-                    if (!fired) {
-                        MainHook.log("promotion: no signal matched for $toSquare — waiting for manual pick (verify loop watches)")
-                    }
-                }
-            } catch (t: Throwable) { MainHook.log("promotion tap failed: $t") }
-        }, 800)
-    }
-
-    /**
-     * Read-only probe: dump the current screen's view + Compose-semantics structure
-     * to the log without tapping anything. Triggered by the hidden "promoscan"
-     * socket command — safe to run on a live game screen any time.
-     */
-    fun debugScanCurrentBoard() {
-        mainHandler.post {
-            try {
-                val view = RiveViewFinder.bestRiveView() ?: RiveViewFinder.ensure() ?: run {
-                    MainHook.log("promoscan: no board view")
-                    return@post
-                }
-                PromotionPicker.logOnlyScan(view)
-            } catch (t: Throwable) {
-                MainHook.log("promoscan failed: $t")
-            }
-        }
     }
 
     /** Send a full tap gesture (DOWN → 2 MOVEs → UP) centered on `squareName`. */
@@ -311,9 +236,8 @@ class AutoPlayer(private val remap: Remap, private val bridge: StateBridge) {
 
     /**
      * Send a full tap gesture (DOWN → 2 MOVEs → UP) at target-local coordinates.
-     * The target can be any view in any window (board, queen button, window root):
-     * dispatching directly on it bypasses window hit-routing, and the coordinates
-     * are interpreted in that view's own frame.
+     * Must be local, not screen-absolute (see [squareToScreen]): the framework
+     * only translates coordinates when descending a hierarchy.
      */
     private fun tapViewAt(target: View, x: Float, y: Float, label: String) {
         val loc = IntArray(2)

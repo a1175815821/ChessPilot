@@ -6,7 +6,6 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import com.chessassist.engine.EngineLoop
-import org.json.JSONObject
 
 /**
  * Cross-process bridge between the LSPosed hook (running inside com.duolingo) and the
@@ -66,14 +65,6 @@ class BridgeProvider : ContentProvider() {
             }
             "fen" -> {
                 out.putString("fen", EngineLoop.currentFen)
-            }
-            // Hidden probe (adb shell only): ask the hook to dump the current
-            // screen's view + Compose-semantics structure to the LSPosed log
-            // without tapping anything. Learns the promotion picker's structure
-            // on a live game screen — no promotion needed.
-            "promoscan" -> {
-                BridgeServer.push(JSONObject().apply { put("t", "promoscan") })
-                out.putString("sent", "1")
             }
         }
         return out

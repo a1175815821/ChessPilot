@@ -239,8 +239,9 @@ promo = ChessPieceType.Companion.a("q")   # promotion char → type
 cl5.s(from, to, /*animate=*/false, ArrowType.SOLID, /*mode=*/0, ArrowColor.YELLOW)
 ```
 This is byte-for-byte the call convention `ArrowPainter` uses — verified from real
-caller bytecode, not guessed. Promotion piece type is carried in the UCI string; the
-interactive lesson picker is a separate UI flow (see AutoPlayer notes).
+caller bytecode, not guessed. Promotion piece type is carried in the UCI string; the interactive lesson picker
+is a separate Rive-drawn UI flow the assistant deliberately does not drive
+(promotions are manual-only by design).
 
 ## 4. Hook-point strategy (in order of preference)
 

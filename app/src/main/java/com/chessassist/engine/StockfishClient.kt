@@ -96,6 +96,37 @@ class StockfishClient(private val context: Context) {
         awaitLine("readyok", IDLE_TIMEOUT_MS)
     }
 
+    /** Structural FEN sanity check (6 fields, 8×8 placement, legal tokens). */
+    private fun isSaneFen(fen: String): Boolean {
+        return try {
+            val parts = fen.trim().split(Regex("\\s+"))
+            if (parts.size != 6) return false
+            val rows = parts[0].split('/')
+            if (rows.size != 8) return false
+            for (r in rows) {
+                var w = 0
+                for (ch in r) {
+                    when {
+                        ch in '1'..'8' -> w += ch - '0'
+                        ch == 'p' || ch == 'n' || ch == 'b' || ch == 'r' ||
+                            ch == 'q' || ch == 'k' || ch == 'P' || ch == 'N' ||
+                            ch == 'B' || ch == 'R' || ch == 'Q' || ch == 'K' -> w += 1
+                        else -> return false
+                    }
+                }
+                if (w != 8) return false
+            }
+            if (parts[1] != "w" && parts[1] != "b") return false
+            if (!parts[2].matches(Regex("-|[KQkq]+"))) return false
+            if (parts[3] != "-" && !parts[3].matches(Regex("[a-h][36]"))) return false
+            parts[4].toIntOrNull() ?: return false
+            parts[5].toIntOrNull() ?: return false
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun totalMemMb(): Long {
         return try {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -117,6 +148,14 @@ class StockfishClient(private val context: Context) {
      */
     fun analyse(fen: String, movetimeMs: Long, depth: Int = 0): BestMove? {
         if (!running.get()) return null
+        // SF 19 validates strictly: a malformed FEN prints CRITICAL ERROR and
+        // TERMINATES the process. A poisoned position would then crash-loop
+        // (restart, same FEN, die) through the whole backoff ladder, so reject
+        // junk here — the loop simply waits for the next position instead.
+        if (!isSaneFen(fen)) {
+            Log.w(TAG, "refusing malformed FEN: ${fen.take(80)}")
+            return null
+        }
         val r: BufferedReader?
         synchronized(lock) { r = reader }
         if (r == null) return null

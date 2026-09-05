@@ -23,7 +23,7 @@
 |---|---|
 | 引擎状态 | 运行中 / 启动中… / 已停止 / 启动失败 |
 | Hook 连接 | 已连接（socket 在线）= 对局端连上桥；“x 秒前收到局面”= 正常走棋中；**未连接** = LSPosed 那半边没上报（见排查表） |
-| NNUE | 已加载的神经网络（应为 `embedded nn-b1a57edbea57.nnue`） |
+| NNUE | 已加载的神经网络（SF19 起应为 `embedded nn-1a298aa575a0.nnue`，单 V16 网） |
 | 当前 FEN | 最后一个收到的局面 |
 | 最佳招法 | 引擎给上一个局面的招（带我方胜率，杀棋会标 Mx） |
 | 思考设置 | 当前生效的思考时间/固定深度 |
@@ -134,9 +134,14 @@ cl5.s() 画原生箭头 ◄── BridgeClient ◄──Socket── bestmove �
   遍历覆盖 `Iterable`（含 Set）与数组（B3，真 Java 引擎验证过新旧两种行为）。
 - **生命周期世代号**：`EngineLoop.workerGen` 与 `BridgeServer.serverGen`，快速启停时
   老 worker/accept 线程自动退出，不再出现双引擎进程与重复 bestmove（B4，真机快启停三轮验证）。
-- **NNUE**：`nn-b1a57edbea57.nnue`（65,429,575 字节）+ `nn-baff1ede1f90.nnue`
-  （3,480,122 字节）INCBIN 编进二进制。`tools/fetch_stockfish.sh` 带字节数校验，
-  短了就重下——之前库里的 10MB 截断文件让引擎启动即崩，查了很久。
+- **NNUE**：单 V16 网 `nn-1a298aa575a0.nnue`（98,511,183 字节）INCBIN 编进二进制
+  （SF19 起小网退役）。`tools/fetch_stockfish.sh` 带字节数校验，短了就重下——
+  之前库里的 10MB 截断文件让引擎启动即崩，查了很久。注意 CDN 的 HEAD
+  Content-Length 曾报过错数，以网名即哈希（sha256 前 12 位）为准验货。
+- **Stockfish 19**（2026-09-05 发布，+44 分）：`sf_19` tag + V16 单网；`src/universal/`
+  整目录排除在 NDK 构建外（多架构分发入口，arm64 直编不需要，编进去会炸）；
+  SF19 对坏 FEN 直接 `CRITICAL ERROR` 杀进程，`StockfishClient` 发前先做结构校验，
+  防毒局面 crash-loop 打穿退避。
 
 ## 五、多邻国升级怎么办
 

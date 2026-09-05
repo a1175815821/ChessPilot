@@ -13,15 +13,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(SF_SRC ${CMAKE_CURRENT_SOURCE_DIR}/stockfish/src)
 
 file(GLOB_RECURSE SF_SOURCES ${SF_SRC}/*.cpp)
+# SF 19 added src/universal/ (multi-arch runtime dispatch: per-arch entry
+# points + macOS slice embedding). Our plain arm64 build needs none of it —
+# entry_riscv64/entry_x86 don't even compile for aarch64 — so drop the dir.
+list(FILTER SF_SOURCES EXCLUDE REGEX ".*/universal/.*")
 
 add_executable(stockfish-bin ${SF_SOURCES})
 
 target_include_directories(stockfish-bin PRIVATE ${SF_SRC} ${SF_SRC}/nnue)
 
 target_compile_definitions(stockfish-bin PRIVATE
-    # Nets (nn-b1a57edbea57.nnue + nn-baff1ede1f90.nnue, sitting next to
-    # evaluate.cpp) are embedded via INCBIN so the engine never needs external
-    # net files (no filesDir juggling, no EvalFile setoptions to get wrong).
+    # Net (nn-1a298aa575a0.nnue, SFNNv16, sitting next to evaluate.cpp) is
+    # embedded via INCBIN (see SF's nnue/network.cpp) so the engine never needs
+    # external net files (no filesDir juggling, no EvalFile setoptions to get
+    # wrong). SF 19 retired the secondary small net: only the single default
+    # net (EvalFileDefaultName in evaluate.h) is needed.
     USE_PTHREADS
     NO_PREFETCH
     USE_NEON            # arm64: NEON for NNUE (fast path)

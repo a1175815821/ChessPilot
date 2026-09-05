@@ -1,0 +1,23 @@
+{
+  "comment": "R8-name resolution produced by tools/remap.py for Duolingo 6.85.7. Each entry is a list of candidate obfuscated names tried in order; kept (unobfuscated) names are also allowed. Regenerate this file when Duolingo updates.",
+  "appVersion": "6.85.7",
+  "classes": {
+    "chessGameState": ["wq4"],
+    "chessFen": ["qh4"],
+    "board": ["uc4"],
+    "square": ["ge4"],
+    "piece": ["y65"],
+    "move": ["o65"],
+    "boardController": ["cl5"],
+    "setupModel": ["vq4"],
+    "point": ["xbs"],
+    "arrowCoordinates": ["m9s"],
+    "arrowModel": ["kas"],
+    "boardUpdateEvent": ["x9s"],
+    "arrowType": ["com.duolingo.chess.model.rive.ArrowType"],
+    "arrowColor": ["com.duolingo.chess.model.rive.ArrowColor"],
+    "squareHighlightType": ["com.duolingo.chess.model.rive.SquareHighlightType"],
+    "pieceType": ["com.duolingo.chess.model.ChessPieceType"],
+    "playerColor": ["com.duolingo.chess.model.ChessPlayerColor"]
+  }
+}

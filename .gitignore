@@ -1,0 +1,22 @@
+# Scratch dir for APK analysis (extracted apks, dexes) — not part of the project
+work/
+*.apk
+*.apks
+local.properties
+.gradle/
+build/
+module/build/
+app/build/
+# NDK/CMake cache (regenerable, ~100MB+)
+app/.cxx/
+.kotlin/
+# Stockfish sources + NNUE blobs (~70MB): reproducible via tools/fetch_stockfish.sh
+app/src/main/cpp/stockfish/
+# Local Gradle bootstrap (re-downloadable; root zip ~130MB)
+.gradle-dist/
+gradle-wrapper.zip
+# Signed test artifacts (reproducible via build + apksigner)
+dist/
+# IDE droppings
+.idea/
+*.iml

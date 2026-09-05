@@ -1,0 +1,60 @@
+package com.chessassist
+
+import android.content.Context
+
+/**
+ * Runtime settings shared by UI, service and engine loop (same process).
+ * Persisted in SharedPreferences so toggles survive restarts/updates.
+ */
+object BridgeSettings {
+    private const val PREFS = "chessassist"
+    private const val K_AUTOPLAY = "autoplay"
+    private const val K_MOVETIME = "movetime_ms"
+    private const val K_DEPTH = "search_depth"
+    private const val K_DELAY = "autoplay_delay_ms"
+
+    /** Auto-play Stockfish's move on the real board. Default OFF (ToS/ban risk). */
+    @Volatile var autoPlayEnabled: Boolean = false
+
+    /** Think time per move when [searchDepth] == 0. Range 100..3000 ms. */
+    @Volatile var movetimeMs: Long = 700L
+
+    /**
+     * Fixed search depth (plies). 0 = by time ([movetimeMs]).
+     * Range 0..30; depth mode ignores movetime. Deep values are slow on phones.
+     */
+    @Volatile var searchDepth: Int = 0
+
+    /**
+     * Base gap between the select-tap and the destination-tap. Actual gap gets
+     * ±20% random jitter per move. Range 150..1500 ms. Longer = more reliable
+     * (too fast and the app drops the tap / the piece snaps back).
+     */
+    @Volatile var autoPlayDelayMs: Long = 450L
+
+    fun load(context: Context) {
+        try {
+            val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            autoPlayEnabled = p.getBoolean(K_AUTOPLAY, false)
+            movetimeMs = p.getLong(K_MOVETIME, 700L).coerceIn(100L, 3000L)
+            searchDepth = p.getInt(K_DEPTH, 0).coerceIn(0, 30)
+            autoPlayDelayMs = p.getLong(K_DELAY, 450L).coerceIn(150L, 1500L)
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun save(context: Context) {
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean(K_AUTOPLAY, autoPlayEnabled)
+                .putLong(K_MOVETIME, movetimeMs)
+                .putInt(K_DEPTH, searchDepth)
+                .putLong(K_DELAY, autoPlayDelayMs)
+                .apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun describe(): String =
+        if (searchDepth > 0) "固定深度 $searchDepth 层" else "思考时间 ${movetimeMs}ms"
+}

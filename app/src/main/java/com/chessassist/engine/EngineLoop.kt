@@ -496,7 +496,7 @@ object EngineLoop {
         if (!BridgeSettings.ponderEnabled) return "关"
         val t = ponderThread
         return when {
-            t != null && t.isAlive -> "ponder中（应招${ponderMove ?: "?"}）"
+            t != null && t.isAlive -> "ponder中（猜对手${ponderMove ?: lastPonderMove ?: "?"}）"
             ponderClient?.isRunning() == true -> "待机（引擎在线）"
             else -> "开·引擎未启动"
         }
@@ -844,9 +844,14 @@ object EngineLoop {
                         // while it's the opponent's turn: a live job appends
                         // 极限思考中 to the waiting line. Title untouched.
                         val conclusion = lastConclusionLine()
+                        // Show WHAT we're pondering, not just that we are: the
+                        // predicted enemy move (e.g. 极限思考中（猜对手e7e5）).
+                        // ponderMove is the live job's prediction; fall back to
+                        // the last known prediction while a job spins up.
+                        val guess = (ponderMove ?: lastPonderMove)?.let { "（猜对手$it）" } ?: ""
                         val detail = if (isPonderLive()) {
-                            if (conclusion.isEmpty()) "极限思考中"
-                            else "$conclusion · 极限思考中"
+                            if (conclusion.isEmpty()) "极限思考中$guess"
+                            else "$conclusion · 极限思考中$guess"
                         } else conclusion
                         OverlayManager.clear("等待对手走棋…", detail)
                     }

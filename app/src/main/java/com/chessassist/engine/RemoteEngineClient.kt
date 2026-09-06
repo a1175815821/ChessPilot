@@ -19,10 +19,11 @@ import org.json.JSONObject
  * the ponder reader thread (signalPonderHit itself reads nothing — two
  * concurrent readers on one socket was the original ponder saga; never again).
  *
- * Server-side config is authoritative (threads/movetime live in the PC
- * script): the phone's movetime/depth are sent for protocol compatibility and
- * then ignored by the server. [serverMovetimeMs] (from the info handshake)
- * sizes our analyse timeout.
+ * Think shape (movetime/depth) rides in each request and the server honors
+ * it — the phone's REMOTE sliders drive the PC engine; the script's
+ * --movetime/--depth are only defaults for clients that omit them. Threads/
+ * hash stay server-side (they need a process restart). Timeouts size off the
+ * largest of request/server/depth-lane budgets.
  *
  * No auto-reconnect here by design: fail fast (dead flag), EngineLoop's auto
  * backend owns the fallback-to-local + retry strategy.
@@ -199,10 +200,12 @@ class RemoteEngineClient : EngineClient {
             markDead()
             return null
         }
-        // Server thinks on ITS movetime (authoritative): size the timeout off
-        // that, not the phone slider — otherwise a 3 s server search always
-        // "times out" a 700 ms phone budget and we flap to local forever.
-        val budget = serverMovetimeMs + ANALYSE_GRACE_MS
+        // Timeout covers whatever the server actually thinks: the phone's
+        // remote sliders ride along in the request and the server honors
+        // them (its --movetime/--depth are only defaults now). Fixed-depth
+        // searches are unbounded in time — give them a wide but finite lane.
+        val effective = maxOf(movetimeMs, serverMovetimeMs, if (depth > 0) 45_000L else 0L)
+        val budget = effective + ANALYSE_GRACE_MS
         val deadline = System.currentTimeMillis() + budget
         try {
             while (System.currentTimeMillis() < deadline) {

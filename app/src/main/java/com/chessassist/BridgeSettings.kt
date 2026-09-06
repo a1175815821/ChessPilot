@@ -17,6 +17,8 @@ object BridgeSettings {
     private const val K_BACKEND = "backend"
     private const val K_PCHOST = "pc_host"
     private const val K_PCPORT = "pc_port"
+    private const val K_RMOVETIME = "remote_movetime_ms"
+    private const val K_RDEPTH = "remote_depth"
 
     const val BACKEND_LOCAL = "local"
     const val BACKEND_AUTO = "auto"
@@ -72,6 +74,15 @@ object BridgeSettings {
     /** PC engine port (pc_engine.py --port, default 41718). */
     @Volatile var pcPort: Int = 41718
 
+    /**
+     * Remote think time/depth (phone sliders for the PC engine, sent with
+     * every request — the PC script's --movetime/--depth are only defaults
+     * for clients that omit them). Desktop budgets can exceed phone ones:
+     * 500..10000 ms / depth 0..40. Local sliders are untouched by these.
+     */
+    @Volatile var remoteMovetimeMs: Long = 3000L
+    @Volatile var remoteDepth: Int = 0
+
     fun load(context: Context) {
         try {
             val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -86,6 +97,8 @@ object BridgeSettings {
             } ?: BACKEND_LOCAL
             pcHost = p.getString(K_PCHOST, "")?.trim().orEmpty().take(64)
             pcPort = p.getInt(K_PCPORT, 41718).coerceIn(1, 65535)
+            remoteMovetimeMs = p.getLong(K_RMOVETIME, 3000L).coerceIn(500L, 10000L)
+            remoteDepth = p.getInt(K_RDEPTH, 0).coerceIn(0, 40)
         } catch (_: Throwable) {
         }
     }
@@ -102,6 +115,8 @@ object BridgeSettings {
                 .putString(K_BACKEND, backend)
                 .putString(K_PCHOST, pcHost)
                 .putInt(K_PCPORT, pcPort)
+                .putLong(K_RMOVETIME, remoteMovetimeMs)
+                .putInt(K_RDEPTH, remoteDepth)
                 .apply()
         } catch (_: Throwable) {
         }

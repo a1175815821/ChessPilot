@@ -333,8 +333,10 @@ object EngineLoop {
             ponderFen = fen
             ponderMove = r
             ponderStop.set(false)
-            val movetime = BridgeSettings.movetimeMs
-            val depth = BridgeSettings.searchDepth
+            val movetime = if (c is RemoteEngineClient) BridgeSettings.remoteMovetimeMs
+                else BridgeSettings.movetimeMs
+            val depth = if (c is RemoteEngineClient) BridgeSettings.remoteDepth
+                else BridgeSettings.searchDepth
             Log.i(TAG, "ponder start (opp to move, our reply to $r)")
             ponderThread = Thread({
                 try {
@@ -1135,7 +1137,13 @@ object EngineLoop {
                 }
 
                 OverlayManager.showThinking(BridgeSettings.autoPlayEnabled)
-                val best = c.analyse(fen, BridgeSettings.movetimeMs, BridgeSettings.searchDepth)
+                // Remote engine obeys the remote sliders (sent per request,
+                // server honors them); local obeys the local ones.
+                val mt = if (c is RemoteEngineClient) BridgeSettings.remoteMovetimeMs
+                    else BridgeSettings.movetimeMs
+                val dp = if (c is RemoteEngineClient) BridgeSettings.remoteDepth
+                    else BridgeSettings.searchDepth
+                val best = c.analyse(fen, mt, dp)
                 lastLoopAt = System.currentTimeMillis()
                 // Stale generation waking from a blocking analyse: never publish —
                 // the current worker already owns this position (or a newer one).

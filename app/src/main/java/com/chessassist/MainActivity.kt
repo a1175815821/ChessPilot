@@ -51,13 +51,16 @@ class MainActivity : Activity() {
     private lateinit var ponderSwitch: Switch
     private lateinit var funcHeader: TextView
     private lateinit var funcBox: LinearLayout
-    private lateinit var funcRow: LinearLayout
     private lateinit var backendLabel: TextView
     private lateinit var backendRow: LinearLayout
     private var backendButtons: List<Button> = emptyList()
     private lateinit var hostInput: EditText
     private lateinit var portInput: EditText
     private lateinit var testBtn: Button
+    private lateinit var remoteTimeLabel: TextView
+    private lateinit var remoteTimeBar: SeekBar
+    private lateinit var remoteDepthLabel: TextView
+    private lateinit var remoteDepthBar: SeekBar
     private lateinit var advancedBox: LinearLayout
     private lateinit var advancedHeader: TextView
     private lateinit var eventsHeader: TextView
@@ -193,19 +196,24 @@ class MainActivity : Activity() {
         funcBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        funcRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         autoSwitch = Switch(this).apply {
             text = "自动走棋"
-            textSize = 13f
+            textSize = 15f
             isChecked = BridgeSettings.autoPlayEnabled
             setOnCheckedChangeListener { _, on ->
                 BridgeSettings.autoPlayEnabled = on
                 BridgeSettings.save(this@MainActivity)
             }
         }
+        funcBox.addView(autoSwitch)
+        funcBox.addView(TextView(this).apply {
+            text = "全自动模拟触摸下棋，谨慎使用。"
+            textSize = 12f
+            setTextColor(Color.parseColor("#9E9E9E"))
+        })
         berserkSwitch = Switch(this).apply {
             text = "狂暴模式"
-            textSize = 13f
+            textSize = 15f
             isChecked = BridgeSettings.berserk
             setOnCheckedChangeListener { _, on ->
                 BridgeSettings.berserk = on
@@ -215,9 +223,15 @@ class MainActivity : Activity() {
                 try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
             }
         }
+        funcBox.addView(berserkSwitch)
+        funcBox.addView(TextView(this).apply {
+            text = "极限资源配给强计算，功耗提高。"
+            textSize = 12f
+            setTextColor(Color.parseColor("#9E9E9E"))
+        })
         ponderSwitch = Switch(this).apply {
             text = "极限思考"
-            textSize = 13f
+            textSize = 15f
             isChecked = BridgeSettings.ponderEnabled
             setOnCheckedChangeListener { _, on ->
                 BridgeSettings.ponderEnabled = on
@@ -226,14 +240,9 @@ class MainActivity : Activity() {
                 try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
             }
         }
-        for (sw in listOf(autoSwitch, berserkSwitch, ponderSwitch)) {
-            funcRow.addView(sw, LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-            ))
-        }
-        funcBox.addView(funcRow)
+        funcBox.addView(ponderSwitch)
         funcBox.addView(TextView(this).apply {
-            text = "自动走棋：全自动模拟触摸，谨慎使用。狂暴：极限资源，功耗提高。极限思考：对手回合同步预测。"
+            text = "对手走棋时同步预测，功耗提高。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
@@ -329,6 +338,22 @@ class MainActivity : Activity() {
             })
         }
         advancedBox.addView(portInput)
+        remoteTimeLabel = TextView(this).apply { textSize = 14f }
+        advancedBox.addView(remoteTimeLabel)
+        remoteTimeBar = SeekBar(this).apply {
+            max = 19 // 0..19 → 500..10000ms
+            progress = ((BridgeSettings.remoteMovetimeMs / 500).toInt() - 1).coerceIn(0, 19)
+            setOnSeekBarChangeListener(simpleSeek { refreshSettings() })
+        }
+        advancedBox.addView(remoteTimeBar)
+        remoteDepthLabel = TextView(this).apply { textSize = 14f }
+        advancedBox.addView(remoteDepthLabel)
+        remoteDepthBar = SeekBar(this).apply {
+            max = 40 // 0 = 按时间思考，1..40 = 固定深度
+            progress = BridgeSettings.remoteDepth.coerceIn(0, 40)
+            setOnSeekBarChangeListener(simpleSeek { refreshSettings() })
+        }
+        advancedBox.addView(remoteDepthBar)
         testBtn = Button(this).apply {
             text = "测试远程连接"
             textSize = 14f
@@ -352,19 +377,13 @@ class MainActivity : Activity() {
         }
         advancedBox.addView(testBtn)
         advancedBox.addView(TextView(this).apply {
-            text = "自动=远程优先，断线秒切本地，下局重连；远程的线程/时长在电脑脚本里配，手机滑杆仅本地有效。"
+            text = "自动=远程优先，断线秒切本地，下局重连；下面两项发给电脑执行（脚本参数是默认值，可被覆盖），上面三项只管本地。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
         root.addView(advancedBox)
         updateAdvancedHeader()
 
-        root.addView(TextView(this).apply {
-            text = "无反应：LSPosed 启用本模块，勾选多邻国后重启多邻国 App。"
-            textSize = 12f
-            setTextColor(Color.parseColor("#9E9E9E"))
-            setPadding(0, pad / 2, 0, 0)
-        })
         eventsHeader = TextView(this).apply {
             textSize = 15f
             paint.isFakeBoldText = true
@@ -510,6 +529,8 @@ class MainActivity : Activity() {
         BridgeSettings.movetimeMs = ((timeBar.progress + 1) * 100).toLong()
         BridgeSettings.searchDepth = depthBar.progress
         BridgeSettings.autoPlayDelayMs = 150L + speedBar.progress * 50L
+        BridgeSettings.remoteMovetimeMs = ((remoteTimeBar.progress + 1) * 500).toLong()
+        BridgeSettings.remoteDepth = remoteDepthBar.progress
         BridgeSettings.save(this)
         // Fixed depth makes the time slider meaningless — grey it out instead
         // of explaining it in small print.
@@ -523,6 +544,15 @@ class MainActivity : Activity() {
             "固定深度 关"
         }
         speedLabel.text = "走棋间隔 ${BridgeSettings.autoPlayDelayMs}ms"
+        val rByTime = BridgeSettings.remoteDepth == 0
+        remoteTimeBar.isEnabled = rByTime
+        remoteTimeLabel.alpha = if (rByTime) 1f else 0.4f
+        remoteTimeLabel.text = "远程思考时间 ${BridgeSettings.remoteMovetimeMs}ms"
+        remoteDepthLabel.text = if (BridgeSettings.remoteDepth > 0) {
+            "远程固定深度 ${BridgeSettings.remoteDepth} 层"
+        } else {
+            "远程固定深度 关"
+        }
     }
 
     override fun onResume() {
@@ -546,6 +576,8 @@ class MainActivity : Activity() {
         if (portInput.text.toString() != portStr) {
             portInput.setText(portStr)
         }
+        remoteTimeBar.progress = ((BridgeSettings.remoteMovetimeMs / 500).toInt() - 1).coerceIn(0, 19)
+        remoteDepthBar.progress = BridgeSettings.remoteDepth.coerceIn(0, 40)
         timeBar.progress = ((BridgeSettings.movetimeMs / 100).toInt() - 1).coerceIn(0, 29)
         depthBar.progress = BridgeSettings.searchDepth.coerceIn(0, 30)
         speedBar.progress = ((BridgeSettings.autoPlayDelayMs - 150) / 50).toInt().coerceIn(0, 27)

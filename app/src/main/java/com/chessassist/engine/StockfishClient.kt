@@ -192,6 +192,9 @@ class StockfishClient(private val context: Context) {
         if (depth > 0) send("go depth $depth") else send("go movetime $movetimeMs")
         var best: BestMove? = null
         var lastScoreCp: Int? = null
+        // True when lastScoreCp came from `score mate` (vs `score cp`): mate 0
+        // encodes as scoreCp 0, and only this flag tells it apart from equality.
+        var lastScoreIsMate = false
         // Final search depth (last `info depth` before bestmove): the engine-health
         // diagnostic shown on the banner/status screen. A healthy engine reaches
         // 20+ here at 1500ms+; single digits mean something is throttling it.
@@ -231,16 +234,25 @@ class StockfishClient(private val context: Context) {
                             .toIntOrNull()?.let { if (it > reached) reached = it }
                         if (line.contains(" score cp ")) {
                             val cp = line.substringAfter(" score cp ").substringBefore(' ').toIntOrNull()
-                            if (cp != null && line.contains(" pv ")) lastScoreCp = cp
+                            if (cp != null && line.contains(" pv ")) {
+                                lastScoreCp = cp
+                                lastScoreIsMate = false
+                            }
                         } else if (line.contains(" score mate ")) {
                             val mate = line.substringAfter(" score mate ").substringBefore(' ').toIntOrNull()
-                            if (mate != null) lastScoreCp = mate * 10000
+                            if (mate != null) {
+                                lastScoreCp = mate * 10000
+                                lastScoreIsMate = true
+                            }
                         }
                     }
                     line.startsWith("bestmove") -> {
                         val uci = line.split(' ').getOrNull(1)
                         val ponder = line.split(" ponder ").getOrNull(1)?.trim()
-                        best = uci?.let { BestMove(it, ponder, lastScoreCp, reached) }
+                        // "(none)" (no legal moves: mated/stalemated side to
+                        // move) flows through as a terminal marker — the loop
+                        // turns it into game-over UI, never a move/arrow/tap.
+                        best = uci?.let { BestMove(it, ponder, lastScoreCp, reached, lastScoreIsMate) }
                         break
                     }
                 }
@@ -324,6 +336,7 @@ class StockfishClient(private val context: Context) {
         }
         var best: BestMove? = null
         var lastScoreCp: Int? = null
+        var lastScoreIsMate = false
         var pdepth = 0
         val deadline = System.currentTimeMillis() + PONDER_MAX_MS
         try {
@@ -339,16 +352,22 @@ class StockfishClient(private val context: Context) {
                             .toIntOrNull()?.let { if (it > pdepth) pdepth = it }
                         if (line.contains(" score cp ")) {
                             val cp = line.substringAfter(" score cp ").substringBefore(' ').toIntOrNull()
-                            if (cp != null && line.contains(" pv ")) lastScoreCp = cp
+                            if (cp != null && line.contains(" pv ")) {
+                                lastScoreCp = cp
+                                lastScoreIsMate = false
+                            }
                         } else if (line.contains(" score mate ")) {
                             val mate = line.substringAfter(" score mate ").substringBefore(' ').toIntOrNull()
-                            if (mate != null) lastScoreCp = mate * 10000
+                            if (mate != null) {
+                                lastScoreCp = mate * 10000
+                                lastScoreIsMate = true
+                            }
                         }
                     }
                     line.startsWith("bestmove") -> {
                         val uci = line.split(' ').getOrNull(1)
                         val ponder = line.split(" ponder ").getOrNull(1)?.trim()
-                        best = uci?.let { BestMove(it, ponder, lastScoreCp, pdepth) }
+                        best = uci?.let { BestMove(it, ponder, lastScoreCp, pdepth, lastScoreIsMate) }
                         break
                     }
                 }
@@ -394,4 +413,14 @@ class StockfishClient(private val context: Context) {
     }
 }
 
-data class BestMove(val uci: String, val ponder: String?, val scoreCp: Int?, val depth: Int = 0)
+/**
+ * @param isMate true when [scoreCp] came from a `score mate` line (mate in N,
+ *   sign = side to move). Needed because mate-in-0 encodes as scoreCp == 0,
+ *   indistinguishable from a dead-equal cp 0 — and mate 0 arrives together
+ *   with `bestmove (none)` (no legal moves: checkmated or stalemated side to
+ *   move), which the loop treats as game-over instead of a playable move.
+ */
+data class BestMove(
+    val uci: String, val ponder: String?, val scoreCp: Int?, val depth: Int = 0,
+    val isMate: Boolean = false,
+)

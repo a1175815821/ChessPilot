@@ -279,7 +279,13 @@ object EngineLoop {
      * Per-fen gated (a ponder job is one position); disabling the switch or a
      * missing prediction stops any running job. Never throws.
      */
-    private fun maybePonder(fen: String) {
+    /**
+     * @param gen the worker generation that called us; the ponder-engine
+     *   handshake blocks for seconds, and stop() (or a newer worker) may run
+     *   mid-handshake — creating the process without this check orphans it
+     *   (nobody ever stops it again). Mirrors the main-client guard in runLoop.
+     */
+    private fun maybePonder(fen: String, gen: Long) {
         try {
             if (!BridgeSettings.ponderEnabled) {
                 ensurePonderStopped()
@@ -311,6 +317,14 @@ object EngineLoop {
                 } catch (e: Throwable) {
                     lastPonderStartFailAt = System.currentTimeMillis()
                     Log.w(TAG, "ponder engine start failed: ${e.message?.take(80)}")
+                    return
+                }
+                // Lost the race with stop()/a newer generation during the
+                // (seconds-long) handshake: shut it down, don't orphan the
+                // process (it would ponder into the void for up to 180 s and
+                // squat on its Hash until the app process dies).
+                if (!running.get() || gen != workerGen) {
+                    try { pc.stop() } catch (_: Throwable) {}
                     return
                 }
                 ponderClient = pc
@@ -545,6 +559,29 @@ object EngineLoop {
     private fun publishBest(fen: String, stm: String?, user: String?, best: BestMove, ponderHit: Boolean) {
         // NOTE: the loop-local lastAnalysedFen is set by the caller (it shadows
         // nothing here — this function cannot see runLoop's locals).
+        // Terminal position (side to move has no legal moves): `bestmove (none)`
+        // is game-over, NOT a move. Never push/draw/autoplay it (it used to
+        // surface as "推荐：(none)" + 50% win rate, trip the shallow-depth
+        // tripwire at depth 0, and — length 6 — detonate the promotion plea).
+        // Mate 0 vs stalemate rides BestMove.isMate (both encode scoreCp 0).
+        if (best.uci == "(none)") {
+            analysedFen = fen
+            lastPushedMove = null
+            lastPushedFen = null
+            lastBestMove = null
+            lastBestMoveAt = 0
+            lastScoreCp = null
+            lastScoreStm = null
+            lastScoreUser = null
+            lastDepth = 0
+            lastPonderMove = null
+            lastError = null
+            val msg = if (best.isMate) "被将死，对方M0" else "无合法着法（逼和或终局）"
+            note("终局：$msg")
+            OverlayManager.showStatus("对局结束", msg)
+            BridgeServer.pushClear()
+            return
+        }
         analysedFen = fen
         lastPushedMove = best.uci
         lastPushedFen = fen
@@ -573,6 +610,24 @@ object EngineLoop {
             best.uci, fen, best.scoreCp, BridgeSettings.autoPlayEnabled, user,
             best.depth
         )
+    }
+
+    /**
+     * Re-render the cached bestmove under corrected colors (Bug 4 fix): the
+     * engine result is still valid, only the perspective changed — no new
+     * search, just re-derive the display triple and repaint the banner.
+     * No-op when there is no cached result for this fen (e.g. terminal).
+     */
+    private fun refreshPerspective(fen: String, user: String?) {
+        val m = lastPushedMove
+        val f = lastPushedFen
+        if (m == null || f == null || f != fen || f != analysedFen) return
+        lastScoreUser = user
+        lastError = null
+        OverlayManager.showBestMove(
+            m, fen, lastScoreCp, BridgeSettings.autoPlayEnabled, user, lastDepth
+        )
+        note("颜色修正：胜率视角已更新")
     }
 
     /** Second banner line while waiting: keep the last conclusion visible. */
@@ -763,6 +818,10 @@ object EngineLoop {
     private fun runLoop(gen: Long) {
         var restarts = 0
         var lastAnalysedFen: String? = null
+        // Colors the last analysis was published under (Bug 4: same-fen color
+        // corrections refresh the display instead of re-searching).
+        var lastAnalysedUser: String? = null
+        var lastAnalysedTurn: String? = null
         var prevFen: String? = null
         var lastSkippedFen: String? = null
         fun isStale(): Boolean = gen != workerGen
@@ -813,6 +872,8 @@ object EngineLoop {
                 // (Caught by the back-to-back startpos test, not by review.)
                 if (fen == STARTPOS_FEN && prevFen != STARTPOS_FEN) {
                     lastAnalysedFen = null
+                    lastAnalysedUser = null
+                    lastAnalysedTurn = null
                     analysedFen = null
                     lastBestMove = null
                     lastBestMoveAt = 0
@@ -827,6 +888,17 @@ object EngineLoop {
                 }
                 prevFen = fen
                 if (fen == lastAnalysedFen) {
+                    // Same-FEN color correction: the hook republishes an
+                    // unchanged position when lagging turn/user fields catch
+                    // up. Perspective is pure display — refresh it from the
+                    // cached result instead of burning a re-search.
+                    if (user != lastAnalysedUser || turn != lastAnalysedTurn) {
+                        val perspectiveChanged =
+                            user?.lowercase() != lastAnalysedUser?.lowercase()
+                        lastAnalysedUser = user
+                        lastAnalysedTurn = turn
+                        if (perspectiveChanged) refreshPerspective(fen, user)
+                    }
                     maybeNoteStale()
                     Thread.sleep(60)
                     continue
@@ -862,7 +934,7 @@ object EngineLoop {
                     // Opponent's clock is free thinking time when ponder is on.
                     // Start the job BEFORE painting so the overlay suffix below
                     // reflects the live job, not last iteration's state.
-                    maybePonder(fen)
+                    maybePonder(fen, gen)
                     if (fen != lastSkippedFen) {
                         lastSkippedFen = fen
                         // Turn flipped to the opponent: retire OUR yellow arrow
@@ -907,6 +979,8 @@ object EngineLoop {
                     lastLoopAt = System.currentTimeMillis()
                     if (isStale()) return
                     lastAnalysedFen = fen
+                    lastAnalysedUser = user
+                    lastAnalysedTurn = turn
                     publishBest(fen, stm, user, pondered, ponderHit = true)
                     continue
                 }
@@ -930,18 +1004,22 @@ object EngineLoop {
                 // the current worker already owns this position (or a newer one).
                 if (isStale()) return
                 if (best != null) {
+                    lastAnalysedFen = fen
+                    lastAnalysedUser = user
+                    lastAnalysedTurn = turn
                     // Tripwire for stream cross-talk (the ponder saga class of bug):
                     // a bestmove from a search murdered at depth<=1 with a real
                     // time budget means something else talked to the engine mid-
                     // search (a racing stop/info leak). Loud in events, so the
                     // next incident localizes itself instead of showing up as a
                     // "mystery depth-1 + flipped winrate" banner.
-                    if (best.depth <= 1 && BridgeSettings.movetimeMs >= 500) {
+                    // Terminal (none) reports depth 0 by construction — exempt, it
+                    // has its own game-over path in publishBest, not this alarm.
+                    if (best.uci != "(none)" && best.depth <= 1 && BridgeSettings.movetimeMs >= 500) {
                         Log.w(TAG, "suspicious shallow result: depth=${best.depth} " +
                             "for ${BridgeSettings.movetimeMs}ms budget (uci=${best.uci})")
                         note("分析深度异常：${BridgeSettings.movetimeMs}ms 只搜到深度${best.depth}（${best.uci}），结果仍采用")
                     }
-                    lastAnalysedFen = fen
                     publishBest(fen, stm, user, best, ponderHit = false)
                 } else {
                     // Transient failure (timeout/crash): do NOT mark as analysed or the

@@ -32,6 +32,10 @@ class AutoPlayer(private val bridge: StateBridge) {
         /** Max tap attempts per (fen, move). Bounded: a systematically-wrong geometry
          * must degrade to asking the user, never to an endless tap storm. */
         const val MAX_ATTEMPTS = 3
+        private val UCI_RE = Regex("[a-h][1-8][a-h][1-8][qrbn]?")
+
+        /** Real UCI only (e2e4 / e7e8q): rejects engine markers like "(none)". */
+        fun isLegalUci(u: String): Boolean = UCI_RE.matches(u)
     }
 
     private var attemptKey: String? = null
@@ -65,6 +69,13 @@ class AutoPlayer(private val bridge: StateBridge) {
             return
         }
         if (uci.length < 4) return
+        // Shape gate: only real UCI (e2e4 / e7e8q) proceeds. Engine-sent markers
+        // like "(none)" (terminal position, length 6) used to fall into the
+        // promotion branch below and fire a nonsense manual-promotion plea.
+        if (!isLegalUci(uci)) {
+            MainHook.log("autoplay refused: not a UCI move: $uci")
+            return
+        }
         // Promotion (5-char UCI): manual-only, no taps, no picker driving.
         if (uci.length >= 5) {
             requestManualPromotion(uci)
@@ -134,7 +145,13 @@ class AutoPlayer(private val bridge: StateBridge) {
                 if (isSuperseded(key, startFen, uci)) return@postDelayed
                 tapSquare(view, to, flipped)
                 scheduleAppliedCheck(view, uci, flipped, gap, startFen, cmdFen, key)
-            } catch (t: Throwable) { MainHook.log("autoplay release failed: $t") }
+            } catch (t: Throwable) {
+                // Release the flight: without this a throwing tapSquare()
+                // wedges `key` in flight and every later play for the same
+                // pair is silently swallowed ("chain already in flight").
+                finishFlight(key)
+                MainHook.log("autoplay release failed: $t")
+            }
         }, jittered)
         MainHook.log("autoplay performed: $uci (attempt $attempts/$MAX_ATTEMPTS, gap ${jittered}ms)")
     }
@@ -197,6 +214,9 @@ class AutoPlayer(private val bridge: StateBridge) {
                 finishFlight(key)
                 BridgeClient.sendHelp("stuck", uci)
             } catch (t: Throwable) {
+                // Same leak as the release path: never leave the flight
+                // claimed behind an exception with no user feedback.
+                finishFlight(key)
                 MainHook.log("autoplay verify failed: $t")
             }
         }, gap + 1500)

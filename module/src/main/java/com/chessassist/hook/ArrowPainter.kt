@@ -294,6 +294,12 @@ class ArrowPainter(private val remap: Remap) {
         if (uci.length < 4) return null
         val f = uci.substring(0, 2)
         val t = uci.substring(2, 4)
+        // Square gate: garbage like "(none" used to produce out-of-range
+        // Square(row=61, col=-57) fed straight into the native draw call.
+        if (!isSquare(f) || !isSquare(t)) return null
         return f to t
     }
+
+    private fun isSquare(s: String): Boolean =
+        s.length == 2 && s[0] in 'a'..'h' && s[1] in '1'..'8'
 }

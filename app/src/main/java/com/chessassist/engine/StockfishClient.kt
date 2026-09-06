@@ -21,7 +21,38 @@ import java.util.concurrent.atomic.AtomicBoolean
  * NNUE: both nets (big + small) are embedded into the binary at build time
  * (INCBIN, see CMakeLists.txt), so no external net files are needed on device.
  */
-class StockfishClient(private val context: Context) {
+/**
+ * Engine backend contract: local subprocess ([StockfishClient]) and the PC
+ * remote engine (RemoteEngineClient, TCP to `pc_engine.py`) are interchangeable
+ * behind this. EngineLoop only ever talks to this interface, so the auto
+ * backend (remote-preferred, local fallback) is a client swap, not a rewrite.
+ */
+interface EngineClient {
+    /** Start engine; throws on failure so the caller can restart-loop. */
+    fun start()
+    fun stop()
+    /** False after stop()/failed start: the loop must restart, not reuse, this client. */
+    fun isRunning(): Boolean
+    /** Analyze `fen`; depth > 0 uses `go depth`, else `go movetime`. Null on failure. */
+    fun analyse(fen: String, movetimeMs: Long, depth: Int = 0): BestMove?
+    /** Ponder our reply to the predicted move until hit/stop. Null on failure. */
+    fun ponder(
+        fen: String, ponderMove: String, movetimeMs: Long, depth: Int,
+        stopFlag: AtomicBoolean,
+    ): BestMove?
+    /** Signal ponderhit: the opponent played our predicted move. Best-effort. */
+    fun signalPonderHit()
+    /** Abort a ponder read from another thread. Best-effort. */
+    fun stopPonder()
+    /** NNUE label for the status screen. */
+    val loadedNnue: String?
+    /** Actual Threads/Hash/mode sent at the last configure — status screen. */
+    val lastThreads: Int
+    val lastHashMb: Int
+    val lastBerserk: Boolean
+}
+
+class StockfishClient(private val context: Context) : EngineClient {
 
     companion object {
         private const val TAG = "StockfishClient"
@@ -43,22 +74,22 @@ class StockfishClient(private val context: Context) {
      */
     private val writeLock = Any()
 
-    @Volatile var loadedNnue: String? = null
+    @Volatile override var loadedNnue: String? = null
         private set
 
     /** Actual Threads/Hash sent at the last configure() — shown on the status screen. */
-    @Volatile var lastThreads: Int = 0
+    @Volatile override var lastThreads: Int = 0
         private set
-    @Volatile var lastHashMb: Int = 0
+    @Volatile override var lastHashMb: Int = 0
         private set
-    @Volatile var lastBerserk: Boolean = false
+    @Volatile override var lastBerserk: Boolean = false
         private set
 
     /** False after stop()/failed start: the loop must restart, not reuse, this client. */
-    fun isRunning(): Boolean = running.get() && synchronized(lock) { process != null }
+    override fun isRunning(): Boolean = running.get() && synchronized(lock) { process != null }
 
     /** Start engine; throws on failure so the caller can restart-loop. */
-    fun start() {
+    override fun start() {
         val binary = File(context.applicationInfo.nativeLibraryDir, "libstockfish.so")
         check(binary.exists()) { "stockfish binary missing at ${binary.absolutePath}" }
         synchronized(lock) {
@@ -175,7 +206,7 @@ class StockfishClient(private val context: Context) {
      * block stop() (called on the main thread) for up to movetime+grace and ANR.
      * stop() destroys the process, which unblocks readLine (returns null) here.
      */
-    fun analyse(fen: String, movetimeMs: Long, depth: Int = 0): BestMove? {
+    override fun analyse(fen: String, movetimeMs: Long, depth: Int): BestMove? {
         if (!running.get()) return null
         // SF 19 validates strictly: a malformed FEN prints CRITICAL ERROR and
         // TERMINATES the process. A poisoned position would then crash-loop
@@ -267,7 +298,7 @@ class StockfishClient(private val context: Context) {
         return best
     }
 
-    fun stop() {
+    override fun stop() {
         // Set flag first so a concurrent analyse() loop can exit promptly.
         running.set(false)
         val p: Process?
@@ -308,7 +339,7 @@ class StockfishClient(private val context: Context) {
      * abort promptly (it then pushes a readyok through to unblock this read).
      * No watchdog here — lifetime is stop-driven, bounded by PONDER_MAX_MS.
      */
-    fun ponder(
+    override fun ponder(
         fen: String, ponderMove: String, movetimeMs: Long, depth: Int,
         stopFlag: AtomicBoolean
     ): BestMove? {
@@ -379,7 +410,7 @@ class StockfishClient(private val context: Context) {
     }
 
     /** Signal ponderhit: the opponent played our predicted move. Best-effort. */
-    fun signalPonderHit() {
+    override fun signalPonderHit() {
         try { send("ponderhit") } catch (_: Throwable) {}
     }
 
@@ -388,7 +419,7 @@ class StockfishClient(private val context: Context) {
      * isready whose readyok unblocks the reader (a bare stop leaves it parked
      * on readLine with an idle engine and no output coming).
      */
-    fun stopPonder() {
+    override fun stopPonder() {
         try { send("stop") } catch (_: Throwable) {}
         try { send("isready") } catch (_: Throwable) {}
     }

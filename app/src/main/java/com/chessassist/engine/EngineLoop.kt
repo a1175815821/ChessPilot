@@ -42,14 +42,14 @@ object EngineLoop {
     const val STATE_FAILED = "failed"
 
     private val running = AtomicBoolean(false)
-    private var client: StockfishClient? = null
+    private var client: EngineClient? = null
     /**
      * Ponder's own engine process (P0 isolation): ponder search/ponderhit/stop
      * traffic NEVER touches [client]'s stdin/stdout. Lifecycle mirrors the
      * main client (lazy start on first ponder, dropped on stop/restart/kill).
      * Guarded by worker-thread confinement, like [client].
      */
-    private var ponderClient: StockfishClient? = null
+    private var ponderClient: EngineClient? = null
     private var appContext: Context? = null
     private var worker: Thread? = null
 
@@ -542,7 +542,7 @@ object EngineLoop {
     }
 
     /** Engine resource line for the status screen: mode + actual threads/hash + depth. */
-    private fun engineResLine(c: StockfishClient?): String {
+    private fun engineResLine(c: EngineClient?): String {
         val res = if (c != null && c.lastThreads > 0) {
             "${c.lastThreads}线 · ${c.lastHashMb}MB"
         } else "—"

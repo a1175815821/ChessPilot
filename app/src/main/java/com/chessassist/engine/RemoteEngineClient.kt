@@ -253,6 +253,10 @@ class RemoteEngineClient : EngineClient {
                 put("id", id)
                 put("fen", fen)
                 put("ponderMove", ponderMove)
+                // Think shape rides along like analyse (server honors it);
+                // fixed-depth ponder without this ran on server defaults.
+                put("movetimeMs", movetimeMs)
+                put("depth", depth)
             })
         } catch (_: Throwable) {
             markDead()
@@ -276,7 +280,11 @@ class RemoteEngineClient : EngineClient {
                 // Hit path: the worker's signalPonderHit made the server
                 // answer; the reply flows back through THIS reader (same as
                 // the local client) so the ponder thread exits WITH it.
-                if (o.optString("t") == "result") return resultOf(o)
+                // Stale lines (late answers to older ids) are skipped like analyse.
+                if (o.optString("t") == "result") {
+                    if (o.has("id") && o.optInt("id", id) != id) continue
+                    return resultOf(o)
+                }
                 if (o.optString("t") == "error") {
                     Log.w(TAG, "ponder #${id}: server error: ${o.optString("message").take(100)}")
                     return null

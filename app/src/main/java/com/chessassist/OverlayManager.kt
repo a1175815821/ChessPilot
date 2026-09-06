@@ -14,13 +14,16 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.chessassist.engine.ChessMath
+import com.chessassist.engine.EngineLoop
 
 /**
  * Companion-side overlay: persistent dark status banner (top center by default).
  *
- * Layout (horizontal): [berserk badge? | spinner | title+winrate column | play button].
- * Berserk mode adds a red border + 狂暴 badge (style only — text prefixes are
- * never touched, guards depend on them).
+ * Layout (horizontal): [mode badge? | spinner | title+winrate column | play button].
+ * Berserk mode adds a red border + 狂暴 badge; an active REMOTE backend adds a
+ * green border + 算力 badge instead (remote wins when both apply — berserk
+ * only configures the local engine, which idles while remote serves).
+ * Style only — text prefixes are never touched, guards depend on them.
  * - Container: dark translucent rounded rect, draggable (position persisted).
  * - Win-rate line recolors live (green/yellow/red).
  * - Play button is the ONLY tap target (banner body never consumes taps):
@@ -51,21 +54,43 @@ object OverlayManager {
     @Volatile private var initScheduled = false
 
     private val BERSERK_RED = Color.parseColor("#FF5722")
+    private val REMOTE_GREEN = Color.parseColor("#00E676")
 
     /**
-     * Mode livery: berserk gets a red border + a 狂暴 badge, normal stays plain
-     * dark. Applied by every writer (mode can flip at runtime via the settings
-     * switch). Title/detail TEXT is never prefixed — clear()'s startsWith
-     * guards and the help-title matching depend on exact prefixes.
+     * Mode livery: remote backend gets a green border + 算力 badge, berserk a
+     * red border + 狂暴 badge, otherwise plain dark. Remote wins over berserk
+     * (berserk is meaningless while the PC serves). Applied by every writer
+     * (both can flip at runtime). Title/detail TEXT is never prefixed —
+     * clear()'s startsWith guards and the help-title matching depend on exact
+     * prefixes. The badge background is recolored in place (same drawable).
      */
     private fun applyModeStyle() {
+        val remote = try { EngineLoop.lastBackendUsed == "远程" } catch (_: Throwable) { false }
         val b = try { BridgeSettings.berserk } catch (_: Throwable) { false }
-        modeBadge?.visibility = if (b) View.VISIBLE else View.GONE
+        val badge = modeBadge
+        if (badge != null) {
+            when {
+                remote -> {
+                    badge.text = "算力"
+                    (badge.background as? GradientDrawable)?.setColor(REMOTE_GREEN)
+                    badge.visibility = View.VISIBLE
+                }
+                b -> {
+                    badge.text = "狂暴"
+                    (badge.background as? GradientDrawable)?.setColor(BERSERK_RED)
+                    badge.visibility = View.VISIBLE
+                }
+                else -> badge.visibility = View.GONE
+            }
+        }
         val root = root ?: return
         val bg = bgDrawable ?: return
         val density = try { root.resources.displayMetrics.density } catch (_: Throwable) { 1f }
-        if (b) bg.setStroke((2 * density).toInt(), BERSERK_RED)
-        else bg.setStroke(0, Color.TRANSPARENT)
+        when {
+            remote -> bg.setStroke((2 * density).toInt(), REMOTE_GREEN)
+            b -> bg.setStroke((2 * density).toInt(), BERSERK_RED)
+            else -> bg.setStroke(0, Color.TRANSPARENT)
+        }
     }
 
     private const val PREFS = "chessassist"

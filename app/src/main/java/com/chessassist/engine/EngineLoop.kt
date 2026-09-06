@@ -136,7 +136,14 @@ object EngineLoop {
     // All ponder reads still block, so the ponder search owns a second thread;
     // the worker only ever joins it with timeouts, and a thread that survives
     // the join gets its whole PROCESS killed (never left as a zombie reader).
-    private const val PONDERHIT_TIMEOUT_MS = 3000L
+    /**
+     * Hit-path grace beyond the ponder budget: the engine self-terminates by
+     * budget (see StockfishClient.ponder), so a hit lands within the remaining
+     * budget; only a genuinely wedged engine outlives budget+grace (then it is
+     * correctly killed for a fresh one). The old fixed 3 s join murdered
+     * healthy engines on every slow hit (bare `go ponder` never answers).
+     */
+    private const val PONDERHIT_GRACE_MS = 3000L
     private const val PONDER_STOP_JOIN_MS = 1500L
 
     /** Engine's predicted opponent reply from the last analysis (null = none). */
@@ -181,6 +188,7 @@ object EngineLoop {
         workerGen++
         note("正在停止…")
         ensurePonderStopped()
+        lastPushedPonderKey = null
         try { ponderClient?.stop() } catch (_: Throwable) {}
         ponderClient = null
         try { client?.stop() } catch (_: Throwable) {}
@@ -361,8 +369,13 @@ object EngineLoop {
      * is ready, take it (no new search). Returns the result to publish, or null
      * to fall through to a normal analyse. Never throws; always leaves no live
      * ponder thread behind on the null path.
+     *
+     * @param movetimeMs/depth the budget the ponder job was started with: the
+     *   hit join waits out the REMAINING budget (bounded), not a fixed 3 s.
      */
-    private fun tryConsumePonder(fen: String, moves: List<String>): BestMove? {
+    private fun tryConsumePonder(
+        fen: String, moves: List<String>, movetimeMs: Long, depth: Int,
+    ): BestMove? {
         try {
             val t = ponderThread ?: return null
             val r = ponderMove
@@ -391,17 +404,19 @@ object EngineLoop {
             }
             Log.i(TAG, "ponderhit! ($r)")
             try { cc.signalPonderHit() } catch (_: Throwable) {}
-            try { t.join(PONDERHIT_TIMEOUT_MS) } catch (_: Throwable) {}
+            // Bounded by the job's own budget: budgeted ponder self-terminates,
+            // so a healthy hit lands within the remainder (instant when the
+            // budget already elapsed while the opponent thought).
+            val joinMs = if (depth > 0) 20_000L else movetimeMs + PONDERHIT_GRACE_MS
+            try { t.join(joinMs) } catch (_: Throwable) {}
             val hung = t.isAlive
             Log.i(TAG, "ponderhit join done (threadAlive=$hung resGen=$ponderResGen gen=$ponderGen)")
             val res = if (ponderResGen == ponderGen) ponderResult else null
             ensurePonderStopped()
             if (res == null) {
-                // Healthy ponderhit answers in milliseconds (verified against the
-                // bare binary). Silence past the join means the engine is wedged
-                // in ponder state — never trust it for the fallback search: drop
-                // it so the loop recreates fresh. (Seen live: thread parked,
-                // engine idle-but-mute, all later commands swallowed.)
+                // Silence past budget+grace means the engine is genuinely
+                // wedged — never trust it for the fallback search: drop it so
+                // the loop recreates fresh.
                 if (hung) {
                     // P0: only the PONDER engine dies here. The old code dropped
                     // the MAIN client — a ponder incident restarted analysis too.
@@ -435,8 +450,8 @@ object EngineLoop {
     @Volatile private var remoteDownSticky: Boolean = false
     @Volatile private var remoteCoolUntil: Long = 0L
 
-    /** Which engine actually served the last analysis (status screen). */
-    @Volatile private var lastBackendUsed: String = "本地"
+    /** Which engine actually served the last analysis (status + overlay livery). */
+    @Volatile var lastBackendUsed: String = "本地"
         private set
 
     private fun useRemote(): Boolean =
@@ -604,6 +619,21 @@ object EngineLoop {
     /** Called by [BridgeServer] when the hook (re)connects over loopback TCP. */
     fun onHookConnected() {
         note("对局端已连接（socket 在线）")
+        // Hook process restarted (or first connect): its paint/confirm state is
+        // gone while our dedupe keys persist. Force-resend so current arrows
+        // repaint instead of staying blank until the next move. REPAINT ONLY:
+        // autoplay is forced OFF here — a stale auto-tap into a restarted
+        // Duolingo (menus, not the board) would tap blind. The next real
+        // analysis re-arms autoplay normally.
+        try {
+            lastPushedPonderKey = null
+            val m = lastPushedMove
+            val f = lastPushedFen
+            if (m != null && f != null && f == analysedFen) {
+                BridgeServer.pushBestmove(m, f, false, BridgeSettings.autoPlayDelayMs)
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     /** Called by [BridgeServer] on fatal bridge errors (e.g. port occupied). */
@@ -665,7 +695,10 @@ object EngineLoop {
             "${c.lastThreads}线 · ${c.lastHashMb}MB"
         } else "—"
         val depth = if (lastDepth > 0) " · 深度$lastDepth" else ""
-        return "${BridgeSettings.modeShort()} · $res$depth"
+        // Remote resources come from the PC: label them remote instead of mixing
+        // the local berserk switch with PC threads/hash on one line.
+        val mode = if (c is RemoteEngineClient) "远程" else BridgeSettings.modeShort()
+        return "$mode · $res$depth"
     }
 
     /**
@@ -1004,6 +1037,7 @@ object EngineLoop {
                     lastDepth = 0
                     lastSkippedFen = null
                     lastPonderMove = null
+                    lastPushedPonderKey = null
                     ensurePonderStopped()
                     // New game lifts the remote quarantine: if the previous
                     // game fell back to local, retry remote now. Drop local
@@ -1109,7 +1143,16 @@ object EngineLoop {
                 // answer is already searched — publish it instead of searching.
                 // Anything unconsumed (miss/stale/failure) stops the job so the
                 // normal search below owns the engine alone.
-                val pondered = tryConsumePonder(fen, moves)
+                // Hit-join budget follows the PONDER engine (remote sliders
+                // drive the PC ponder); the analyse budget below follows the
+                // main client — the two can transiently differ after a
+                // fallback, and must not leak into each other.
+                val pc0 = ponderClient
+                val pmt = if (pc0 is RemoteEngineClient) BridgeSettings.remoteMovetimeMs
+                    else BridgeSettings.movetimeMs
+                val pdp = if (pc0 is RemoteEngineClient) BridgeSettings.remoteDepth
+                    else BridgeSettings.searchDepth
+                val pondered = tryConsumePonder(fen, moves, pmt, pdp)
                 if (pondered != null) {
                     lastLoopAt = System.currentTimeMillis()
                     if (isStale()) return
@@ -1160,10 +1203,14 @@ object EngineLoop {
                     // "mystery depth-1 + flipped winrate" banner.
                     // Terminal (none) reports depth 0 by construction — exempt, it
                     // has its own game-over path in publishBest, not this alarm.
-                    if (best.uci != "(none)" && best.depth <= 1 && BridgeSettings.movetimeMs >= 500) {
+                    // Fixed-depth searches are exempt too (depth 1 is legitimate
+                    // when the user asked for it); only time-mode with a real
+                    // budget trips. Budget is the EFFECTIVE one (remote sliders
+                    // drive the PC engine, not the local slider).
+                    if (best.uci != "(none)" && best.depth <= 1 && dp == 0 && mt >= 500) {
                         Log.w(TAG, "suspicious shallow result: depth=${best.depth} " +
-                            "for ${BridgeSettings.movetimeMs}ms budget (uci=${best.uci})")
-                        note("分析深度异常：${BridgeSettings.movetimeMs}ms 只搜到深度${best.depth}（${best.uci}），结果仍采用")
+                            "for ${mt}ms budget (uci=${best.uci})")
+                        note("分析深度异常：${mt}ms 只搜到深度${best.depth}（${best.uci}），结果仍采用")
                     }
                     publishBest(fen, stm, user, best, ponderHit = false)
                 } else {

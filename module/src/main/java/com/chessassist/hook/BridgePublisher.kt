@@ -34,29 +34,14 @@ object BridgePublisher {
     @Volatile var ponderConfirmedFen: String? = null
     @Volatile var ponderConfirmedMove: String? = null
     @Volatile var lastPonderAttemptAt: Long = 0
-    @Volatile var autoPlayEnabled: Boolean = false
+    /**
+     * Best-arrow paint confirmation (same self-healing model as the prediction:
+     * renders repaint the pending bestmove until a paint CONFIRMS, throttled).
+     */
+    @Volatile var bestConfirmedFen: String? = null
+    @Volatile var bestConfirmedMove: String? = null
+    @Volatile var lastBestAttemptAt: Long = 0
     @Volatile var lastAnalyzedFen: String? = null
-
-    // Shared (fen,move) draw dedupe across ALL painter instances. A draw is identified
-    // purely by what it shows — never by age: an "expired" arrow must NOT be redrawn
-    // (that caused a 13k-invoke storm: per-frame retriggers × lapsed 30 s window).
-    // Redraw happens only when the pair changes; explicit clear() re-arms it.
-    @Volatile private var drawnFen: String? = null
-    @Volatile private var drawnMove: String? = null
-
-    @Synchronized
-    fun needDraw(fen: String, move: String): Boolean {
-        if (drawnFen == fen && drawnMove == move) return false
-        drawnFen = fen
-        drawnMove = move
-        return true
-    }
-
-    @Synchronized
-    fun clearDrawn() {
-        drawnFen = null
-        drawnMove = null
-    }
 
     /**
      * New game/lesson: drop the previous game's sticky state. Without this, the old
@@ -76,7 +61,9 @@ object BridgePublisher {
         ponderConfirmedFen = null
         ponderConfirmedMove = null
         lastPonderAttemptAt = 0
-        clearDrawn()
+        bestConfirmedFen = null
+        bestConfirmedMove = null
+        lastBestAttemptAt = 0
         MainHook.log("new game: sticky state reset")
     }
 
@@ -91,7 +78,9 @@ object BridgePublisher {
     fun resetPublishState() {
         lastAnalyzedFen = null
         lastPublishKey = null
-        clearDrawn()
+        bestConfirmedFen = null
+        bestConfirmedMove = null
+        lastBestAttemptAt = 0
         MainHook.log("board rebuilt: republish armed")
     }
 

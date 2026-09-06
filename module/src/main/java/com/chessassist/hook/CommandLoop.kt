@@ -1,10 +1,10 @@
 package com.chessassist.hook
 
 /**
- * Command dispatcher: the companion pushes bestmove/clear/config over the loopback
- * socket ([BridgeClient]); this executes them. Push replaces the old 250 ms provider
- * poll, so arrows land faster and no poll thread can steal another process's command
- * (only the main Duolingo process runs hooks at all).
+ * Command dispatcher: the companion pushes bestmove/clear/ponder/clearponder/play
+ * over the loopback socket ([BridgeClient]); this executes them. Push replaces the
+ * old 250 ms provider poll, so arrows land faster and no poll thread can steal
+ * another process's command (only the main Duolingo process runs hooks at all).
  */
 object CommandLoop {
 
@@ -51,9 +51,8 @@ object CommandLoop {
                 }
                 "clear" -> ensurePainter()?.clear()
                 // Ponder prediction (display-only gray arrow): never autoplayed,
-                // never touches bestmove state. Self-healing repaints (not the
-                // one-shot needDraw gate) keep it on the board; any bestmove
-                // draw resets arrows first.
+                // never touches bestmove state. Confirm-model repaints keep it on
+                // the board; any bestmove draw resets arrows first.
                 "ponder" -> {
                     val uci = cmd["move"] ?: return
                     val fen = cmd["fen"] ?: BridgePublisher.lastAnalyzedFen ?: return
@@ -79,8 +78,6 @@ object CommandLoop {
                     BridgePublisher.ponderConfirmedFen = null
                     BridgePublisher.ponderConfirmedMove = null
                 }
-                // Kept for backward compat: remembered but no longer gates autoplay.
-                "config" -> BridgePublisher.autoPlayEnabled = cmd["autoplay"] == "1"
                 // Semi-auto: user tapped the banner button — play the exact pair the
                 // companion just pushed (freshness gate inside performMove applies).
                 "play" -> {

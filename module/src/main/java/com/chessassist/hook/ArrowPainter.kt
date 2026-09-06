@@ -26,8 +26,13 @@ class ArrowPainter(private val remap: Remap) {
         const val PREDICTION_COLOR = "GRAY"
         /** Min gap between prediction paint attempts (render storms ≠ invoke storms). */
         const val PREDICT_RETRY_MS = 800L
-        /** A pair unconfirmed this long is a broken board, not a missed paint. */
-        const val PREDICT_MAX_AGE_MS = 30_000L
+        /** A pair unconfirmed this long is a broken board, not a missed paint.
+         * Generous: 10-minute games think longer than 30 s, and attempts are
+         * cheap (throttled + quiet-gated). */
+        const val PREDICT_MAX_AGE_MS = 120_000L
+        /** Same throttle/expiry for the best arrow (mirrors the prediction model). */
+        const val BEST_RETRY_MS = 800L
+        const val BEST_MAX_AGE_MS = 120_000L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -38,9 +43,10 @@ class ArrowPainter(private val remap: Remap) {
     fun onGameState(state: Any) {
         val fen = BridgePublisher.lastAnalyzedFen ?: return
         val best = BridgePublisher.lastBestMove
-        // staleness guard: only draw a move computed for THIS position
+        // staleness guard: only draw a move computed for THIS position.
+        // Confirm-model repaint heals transition wipes (same as predictions).
         if (best != null && BridgePublisher.lastBestMoveFen == fen) {
-            draw(best, fen)
+            repaintBestIfDue()
             return
         }
         // New board state may have wiped our prediction: drop the confirmation
@@ -59,7 +65,7 @@ class ArrowPainter(private val remap: Remap) {
         val analysedFen = BridgePublisher.lastAnalyzedFen ?: return
         val best = BridgePublisher.lastBestMove
         if (best != null && BridgePublisher.lastBestMoveFen == analysedFen) {
-            draw(best, analysedFen)
+            repaintBestIfDue()
             return
         }
         repaintPredictionIfDue()
@@ -68,7 +74,7 @@ class ArrowPainter(private val remap: Remap) {
     /**
      * Repaint the pending prediction while it is current but UNCONFIRMED.
      * Throttled (a render storm must not become an invoke storm) and expired
-     * (a pair unconfirmed for 30 s means a broken board, not a missed paint).
+     * (a pair unconfirmed past MAX_AGE means a broken board, not a missed paint).
      * Called on every render/state — this is what heals transition wipes and
      * bridge drops within about a second.
      */
@@ -88,18 +94,42 @@ class ArrowPainter(private val remap: Remap) {
 
     /** Entry point invoked by the command dispatcher: paint `uciMove` (e.g. "e2e4"). */
     fun draw(uciMove: String, fen: String) {
-        val (from, to) = splitUci(uciMove) ?: return
-        // Shared (fen,move) gate: one draw per pair, across all painter instances,
-        // regardless of age. Per-frame retriggers die here for free.
-        if (!BridgePublisher.needDraw(fen, uciMove)) return
-        // Hop to main thread (Rive is main-only; socket/hook threads must not touch it).
-        mainHandler.post { drawOnMain(uciMove, from, to) }
+        if (splitUci(uciMove) == null) return
+        // Confirm model (mirrors predictions): renders repaint until a paint
+        // CONFIRMS, so transition wipes heal. Reset the throttle so the arrival
+        // attempt paints immediately.
+        BridgePublisher.lastBestAttemptAt = 0
+        repaintBestIfDue()
     }
 
     /**
-     * Predicted enemy reply: same gate/mechanics as [draw], but RED and with NO
-     * ack back to the companion (an ack would read as "bestmove confirmed" in
-     * the event log) and NEVER routed to autoplay (dispatcher only draws).
+     * Repaint the pending bestmove while it is current but UNCONFIRMED.
+     * Throttled + expired like predictions, so render storms stay bounded and
+     * a broken board eventually stops retrying. Called on every command/render.
+     */
+    fun repaintBestIfDue() {
+        val fen = BridgePublisher.lastAnalyzedFen ?: return
+        val move = BridgePublisher.lastBestMove ?: return
+        if (BridgePublisher.lastBestMoveFen != fen) return
+        if (BridgePublisher.bestConfirmedFen == fen &&
+            BridgePublisher.bestConfirmedMove == move
+        ) return // already on the board
+        val now = System.currentTimeMillis()
+        if (now - BridgePublisher.lastBestMoveAt > BEST_MAX_AGE_MS) return
+        if (now - BridgePublisher.lastBestAttemptAt < BEST_RETRY_MS) return
+        BridgePublisher.lastBestAttemptAt = now
+        paintBest(move, fen)
+    }
+
+    private fun paintBest(uciMove: String, fen: String) {
+        val (from, to) = splitUci(uciMove) ?: return
+        mainHandler.post { drawOnMain(uciMove, from, to, colorName = "YELLOW", fen = fen) }
+    }
+
+    /**
+     * Predicted enemy reply: confirm-model like [draw], but with NO ack back to
+     * the companion (an ack would read as "bestmove confirmed" in the event log)
+     * and NEVER routed to autoplay (dispatcher only draws).
      */
     /**
      * New prediction from the dispatcher: attempt a paint NOW (first render
@@ -118,9 +148,8 @@ class ArrowPainter(private val remap: Remap) {
      * shows on the live board (renders invisible — likely missing asset in the
      * live artboard; the enum exists game-wide, probably for post-game review).
      * Single constant so the next color test is a one-line change.
-     * NOTE: predictions deliberately bypass the one-shot needDraw gate (it
-     * consumed the pair on arrival and never healed transition wipes) — storm
-     * safety comes from the repaint throttle + max age instead.
+     * NOTE: both colors use the confirm-model (repaint until CONFIRMED) — storm
+     * safety comes from the repaint throttle + max age instead of a one-shot gate.
      */
     private fun paintPrediction(uciMove: String, fen: String) {
         val (from, to) = splitUci(uciMove) ?: return
@@ -179,10 +208,14 @@ class ArrowPainter(private val remap: Remap) {
             m.invoke(controller, fromSq, toSq, false, solid, 0, color)
             // Ack only real bestmoves: a prediction ack would masquerade as a
             // confirmed recommendation in the companion's event log. A
-            // successful prediction paint CONFIRMS the pair instead, which
-            // stops the self-healing repaints until the next board state.
+            // successful paint CONFIRMS the pair instead, which stops the
+            // self-healing repaints until the next board state (both colors).
             if (colorName == "YELLOW") {
                 BridgePublisher.markArrowDrawn(uciMove)
+                if (fen != null) {
+                    BridgePublisher.bestConfirmedFen = fen
+                    BridgePublisher.bestConfirmedMove = uciMove
+                }
             } else if (fen != null) {
                 BridgePublisher.ponderConfirmedFen = fen
                 BridgePublisher.ponderConfirmedMove = uciMove
@@ -197,7 +230,9 @@ class ArrowPainter(private val remap: Remap) {
 
     /** Reset arrows — mirrors the app's own `cl5.r()` call before drawing (see hq4.n). */
     fun clear() {
-        BridgePublisher.clearDrawn()
+        BridgePublisher.bestConfirmedFen = null
+        BridgePublisher.bestConfirmedMove = null
+        BridgePublisher.lastBestAttemptAt = 0
         val controller = BridgeAccess.boardController ?: return
         // Same reason as draw(): the controller owns Rive state — main thread only.
         if (Looper.myLooper() == Looper.getMainLooper()) {

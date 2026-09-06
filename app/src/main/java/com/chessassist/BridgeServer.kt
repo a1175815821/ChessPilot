@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   app  -> hook: {"t":"ponder","move":"e7e5","fen":"..."} (predicted enemy reply: hook draws
  *             it RED, display-only — never autoplayed, never touches bestmove state)
  *   app  -> hook: {"t":"clearponder"} (drop the red prediction, keep the yellow best arrow)
- *   app  -> hook: {"t":"clear"} | {"t":"config","autoplay":"0"}
+ *   app  -> hook: {"t":"clear"}
  *   app  -> hook: {"t":"play","move":"e2e4","fen":"...","autoplayDelay":"450"}
  */
 object BridgeServer {
@@ -54,7 +54,14 @@ object BridgeServer {
     @Volatile private var serverGen = 0L
     private val hookOutputs = CopyOnWriteArrayList<OutputStream>()
     private val sendLock = Any()
-    private var pendingPush: JSONObject? = null
+    /**
+     * FIFO command queue (was a single latest-only slot that silently dropped a
+     * bestmove when a ponder/clear landed before the sender woke). The engine
+     * thread still never blocks on socket I/O; the sender drains in order.
+     * Capped: a stuck peer must not grow this without bound — oldest drops first.
+     */
+    private val pendingQueue = ArrayDeque<JSONObject>()
+    private const val MAX_QUEUE = 20
 
     // Accepted client sockets. stop() closes them so the serve() reader threads
     // unblock (readLine returns/throws) and exit — otherwise they survive as
@@ -108,17 +115,18 @@ object BridgeServer {
         acceptThread = null
         try { senderThread?.interrupt() } catch (_: Throwable) {}
         senderThread = null
-        synchronized(sendLock) { pendingPush = null }
+        synchronized(sendLock) { pendingQueue.clear() }
     }
 
     /**
-     * Enqueue a command for the hook. Latest-only + async: the engine thread never
+     * Enqueue a command for the hook. FIFO + async: the engine thread never
      * blocks on socket I/O here. A write to a full/dead peer buffer would otherwise
      * stall the whole analysis loop with a frozen banner and no timeout to save it.
      */
     fun push(obj: JSONObject) {
         synchronized(sendLock) {
-            pendingPush = obj
+            if (pendingQueue.size >= MAX_QUEUE) pendingQueue.removeFirst()
+            pendingQueue.addLast(obj)
             (sendLock as java.lang.Object).notify()
         }
     }
@@ -127,16 +135,14 @@ object BridgeServer {
         fun isStale(): Boolean = gen != serverGen
         while (running.get() && !isStale()) {
             val obj: JSONObject? = synchronized(sendLock) {
-                while (running.get() && !isStale() && pendingPush == null) {
+                while (running.get() && !isStale() && pendingQueue.isEmpty()) {
                     try {
                         (sendLock as java.lang.Object).wait()
                     } catch (_: InterruptedException) {
                         return
                     }
                 }
-                val o = pendingPush
-                pendingPush = null
-                o
+                if (pendingQueue.isEmpty()) null else pendingQueue.removeFirst()
             }
             if (obj == null) continue
             if (isStale()) return

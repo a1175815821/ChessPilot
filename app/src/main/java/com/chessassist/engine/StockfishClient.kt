@@ -134,7 +134,11 @@ class StockfishClient(private val context: Context) : EngineClient {
         send("setoption name MultiPV value 1")
         loadedNnue = "(embedded nn-1a298aa575a0.nnue)"
         send("isready")
-        awaitLine("readyok", IDLE_TIMEOUT_MS)
+        // A hung engine must fail the start (the caller restarts): ignoring this
+        // lets a mute engine look healthy, and the handshake reader thread stays
+        // parked stealing later analyse lines. stop() in the catch below closes
+        // the reader and releases it.
+        check(awaitLine("readyok", IDLE_TIMEOUT_MS)) { "readyok timeout" }
     }
 
     /**
@@ -338,6 +342,12 @@ class StockfishClient(private val context: Context) : EngineClient {
      * with analyse(); [stopFlag] is checked on every line so the owner can
      * abort promptly (it then pushes a readyok through to unblock this read).
      * No watchdog here — lifetime is stop-driven, bounded by PONDER_MAX_MS.
+     *
+     * ALWAYS ponders with a budget (movetime/depth): bare `go ponder` is
+     * INFINITE by UCI design (ponderhit just flips it to a normal infinite
+     * search), so a hit would hang forever waiting for a bestmove that never
+     * comes. With a budget the engine self-terminates and the hit reply lands
+     * within the remaining budget (instant when the budget already elapsed).
      */
     override fun ponder(
         fen: String, ponderMove: String, movetimeMs: Long, depth: Int,
@@ -361,7 +371,9 @@ class StockfishClient(private val context: Context) : EngineClient {
             return null
         }
         try {
-            if (depth > 0) send("go ponder depth $depth") else send("go ponder")
+            if (depth > 0) send("go ponder depth $depth")
+            else if (movetimeMs > 0) send("go ponder movetime $movetimeMs")
+            else send("go ponder")
         } catch (_: Throwable) {
             return null
         }

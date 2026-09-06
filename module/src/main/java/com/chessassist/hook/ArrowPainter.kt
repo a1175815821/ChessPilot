@@ -134,7 +134,7 @@ class ArrowPainter(private val remap: Remap) {
             // Ack only real bestmoves: a prediction ack would masquerade as a
             // confirmed recommendation in the companion's event log.
             if (colorName == "YELLOW") BridgePublisher.markArrowDrawn(uciMove)
-            MainHook.log("arrow drawn: $uciMove ($colorName)")
+            MainHook.log("arrow drawn: $uciMove ($colorName, waited=${waitedMs}ms)")
         } catch (t: Throwable) {
             MainHook.log("arrow draw failed: $t")
             OverlayFallback.ensure()
@@ -194,7 +194,8 @@ class ArrowPainter(private val remap: Remap) {
     @Volatile private var probedColors: String? = null
 
     private fun resolveArrowColor(loader: ClassLoader, name: String): Any? {
-        enumConstant(loader, "arrowColor", name)?.let { return it }
+        // Always report the full enum once (diagnosing "RED resolves but renders
+        // invisible/yellow": the constant existing says nothing about rendering).
         if (probedColors == null) {
             probedColors = try {
                 remap.resolveClass(loader, "arrowColor")
@@ -202,8 +203,10 @@ class ArrowPainter(private val remap: Remap) {
             } catch (_: Throwable) {
                 "?"
             }
-            MainHook.log("arrowColor has no $name; available=$probedColors (falling back to YELLOW)")
+            MainHook.log("arrowColor values=$probedColors (want $name)")
         }
+        enumConstant(loader, "arrowColor", name)?.let { return it }
+        MainHook.log("arrowColor has no $name; available=$probedColors (falling back to YELLOW)")
         return enumConstant(loader, "arrowColor", "YELLOW")
     }
 

@@ -292,6 +292,11 @@ object EngineLoop {
                 pushPonderGuessOrClear(fen, null)
                 return
             }
+            // Push the guess FIRST, before the (possibly slow: 1-3 s first-time
+            // engine handshake) ponder job spins up. The prediction is known
+            // already; the red arrow must not wait for the search. Key-gated,
+            // so this costs one message per (fen, prediction).
+            pushPonderGuessOrClear(fen, r)
             val t = ponderThread
             if (fen == ponderFen && t != null && t.isAlive) return // already on it
             ensurePonderStopped()
@@ -335,8 +340,6 @@ object EngineLoop {
                     Log.w(TAG, "ponder thread died: ${t.message?.take(80)}")
                 }
             }, "ponder").apply { isDaemon = true; start() }
-            // Job is live: show the prediction on the board (red, display-only).
-            pushPonderGuessOrClear(fen, r)
         } catch (_: Throwable) {
         }
     }
@@ -862,6 +865,15 @@ object EngineLoop {
                     maybePonder(fen)
                     if (fen != lastSkippedFen) {
                         lastSkippedFen = fen
+                        // Turn flipped to the opponent: retire OUR yellow arrow
+                        // from the board NOW. Otherwise it lingers through fast
+                        // opponent turns (loop never sees a settled position,
+                        // ponder never engages) and reads as a "yellow
+                        // prediction" — the exact confusion reported live.
+                        // Text conclusion survives in the overlay; the board
+                        // goes blank until the red prediction lands (or our
+                        // next analysis repaints yellow). Once per fen.
+                        BridgeServer.pushClear()
                         // Mirror the ponder state on the floating overlay, only
                         // while it's the opponent's turn: a live job appends
                         // 极限思考中 to the waiting line. Title untouched.

@@ -28,6 +28,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   hook -> app : {"t":"ack","drawn":"e2e4"}
  *   hook -> app : {"t":"help","code":"promotion|stuck","move":"e7e8q"}
  *   app  -> hook: {"t":"bestmove","move":"e2e4","fen":"...","autoplay":"0","autoplayDelay":"450"}
+ *   app  -> hook: {"t":"ponder","move":"e7e5","fen":"..."} (predicted enemy reply: hook draws
+ *             it RED, display-only — never autoplayed, never touches bestmove state)
+ *   app  -> hook: {"t":"clearponder"} (drop the red prediction, keep the yellow best arrow)
  *   app  -> hook: {"t":"clear"} | {"t":"config","autoplay":"0"}
  *   app  -> hook: {"t":"play","move":"e2e4","fen":"...","autoplayDelay":"450"}
  */
@@ -167,6 +170,20 @@ object BridgeServer {
 
     fun pushClear() {
         push(JSONObject().apply { put("t", "clear") })
+    }
+
+    /** Ponder prediction for the hook's red display-only arrow (see protocol). */
+    fun pushPonderGuess(move: String, fen: String) {
+        push(JSONObject().apply {
+            put("t", "ponder")
+            put("move", move)
+            put("fen", fen)
+        })
+    }
+
+    /** Retire the red prediction arrow without disturbing the bestmove arrow. */
+    fun pushClearPonder() {
+        push(JSONObject().apply { put("t", "clearponder") })
     }
 
     /** Semi-auto: user tapped the banner button — play this exact (move, fen). */

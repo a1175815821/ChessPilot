@@ -29,6 +29,7 @@ object OverlayFallback {
     private var added = false
     private var overlay: FrameLayout? = null
     private var arrowSpec: Pair<Pair<Float, Float>, Pair<Float, Float>>? = null
+    private var arrowColor: Int = Color.argb(190, 255, 210, 0)
 
     fun ensure() {
         if (added) return
@@ -38,7 +39,7 @@ object OverlayFallback {
                 val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 val v = object : View(ctx) {
                     override fun onDraw(c: Canvas) {
-                        arrowSpec?.let { (from, to) -> drawArrow(c, from, to) }
+                        arrowSpec?.let { (from, to) -> drawArrow(c, from, to, arrowColor) }
                     }
                 }
                 overlay = FrameLayout(ctx).also { it.addView(v) }
@@ -62,7 +63,10 @@ object OverlayFallback {
         }
     }
 
-    fun drawArrow(fromSquare: String, toSquare: String) {
+    fun drawArrow(
+        fromSquare: String, toSquare: String,
+        color: Int = Color.argb(190, 255, 210, 0),
+    ) {
         // Square names → screen coords requires the board's view bounds; captured lazily
         // from the RiveAnimationView instance held by the controller. Without it we cannot
         // map squares → pixels, so this fallback only runs when controller exists but
@@ -71,6 +75,7 @@ object OverlayFallback {
         mainHandler.post {
             overlay?.let { o ->
                 arrowSpec = squaresToPoints(view, fromSquare, toSquare)
+                arrowColor = color
                 o.invalidate()
             }
         }
@@ -94,9 +99,9 @@ object OverlayFallback {
         return pt(from) to pt(to)
     }
 
-    private fun drawArrow(c: Canvas, from: Pair<Float, Float>, to: Pair<Float, Float>) {
+    private fun drawArrow(c: Canvas, from: Pair<Float, Float>, to: Pair<Float, Float>, color: Int) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(190, 255, 210, 0)
+            this.color = color
             style = Paint.Style.STROKE
             strokeWidth = 14f
             strokeCap = Paint.Cap.ROUND

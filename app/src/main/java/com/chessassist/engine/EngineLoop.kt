@@ -150,6 +150,11 @@ object EngineLoop {
     @Volatile private var ponderGen = 0L
     @Volatile private var ponderResult: BestMove? = null
     @Volatile private var ponderResGen = -1L
+    /**
+     * Last (fen|prediction) pushed to the hook's red arrow. Change-gated so the
+     * opponent-turn branch (every 200 ms) doesn't spam the bridge; null clears.
+     */
+    @Volatile private var lastPushedPonderKey: String? = null
     /** Last failed ponder-engine start: cooldown so a missing binary doesn't respawn every 200 ms. */
     @Volatile private var lastPonderStartFailAt: Long = 0
     private const val PONDER_START_RETRY_MS = 30_000L
@@ -257,6 +262,19 @@ object EngineLoop {
     }
 
     /**
+     * Push the red prediction arrow (or retire it) on change only. The bridge
+     * is latest-only, so a dropped push just means "same as displayed" — the
+     * hook repaints from its stored pair on every render anyway.
+     */
+    private fun pushPonderGuessOrClear(fen: String, pred: String?) {
+        val key = pred?.let { "$fen|$it" }
+        if (key == lastPushedPonderKey) return
+        lastPushedPonderKey = key
+        if (key != null) BridgeServer.pushPonderGuess(pred!!, fen)
+        else BridgeServer.pushClearPonder()
+    }
+
+    /**
      * Opponent's turn: start/keep pondering our reply to the predicted move.
      * Per-fen gated (a ponder job is one position); disabling the switch or a
      * missing prediction stops any running job. Never throws.
@@ -265,11 +283,13 @@ object EngineLoop {
         try {
             if (!BridgeSettings.ponderEnabled) {
                 ensurePonderStopped()
+                pushPonderGuessOrClear(fen, null)
                 return
             }
             val r = lastPonderMove
             if (r == null) {
                 ensurePonderStopped()
+                pushPonderGuessOrClear(fen, null)
                 return
             }
             val t = ponderThread
@@ -315,6 +335,8 @@ object EngineLoop {
                     Log.w(TAG, "ponder thread died: ${t.message?.take(80)}")
                 }
             }, "ponder").apply { isDaemon = true; start() }
+            // Job is live: show the prediction on the board (red, display-only).
+            pushPonderGuessOrClear(fen, r)
         } catch (_: Throwable) {
         }
     }
@@ -496,7 +518,7 @@ object EngineLoop {
         if (!BridgeSettings.ponderEnabled) return "关"
         val t = ponderThread
         return when {
-            t != null && t.isAlive -> "ponder中（猜对手${ponderMove ?: lastPonderMove ?: "?"}）"
+            t != null && t.isAlive -> "ponder中（预测${ponderMove ?: lastPonderMove ?: "?"}）"
             ponderClient?.isRunning() == true -> "待机（引擎在线）"
             else -> "开·引擎未启动"
         }
@@ -844,14 +866,15 @@ object EngineLoop {
                         // while it's the opponent's turn: a live job appends
                         // 极限思考中 to the waiting line. Title untouched.
                         val conclusion = lastConclusionLine()
-                        // Show WHAT we're pondering, not just that we are: the
-                        // predicted enemy move (e.g. 极限思考中（猜对手e7e5）).
+                        // Show WHAT we're pondering, on its OWN second line: the
+                        // predicted enemy move (e.g. 极限思考（预测e7e5）).
                         // ponderMove is the live job's prediction; fall back to
                         // the last known prediction while a job spins up.
-                        val guess = (ponderMove ?: lastPonderMove)?.let { "（猜对手$it）" } ?: ""
+                        val guess = (ponderMove ?: lastPonderMove)?.let { "极限思考（预测$it）" }
+                            ?: "极限思考中"
                         val detail = if (isPonderLive()) {
-                            if (conclusion.isEmpty()) "极限思考中$guess"
-                            else "$conclusion · 极限思考中$guess"
+                            if (conclusion.isEmpty()) guess
+                            else "$conclusion\n$guess"
                         } else conclusion
                         OverlayManager.clear("等待对手走棋…", detail)
                     }

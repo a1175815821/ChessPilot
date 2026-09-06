@@ -1,5 +1,6 @@
 package com.chessassist.hook
 
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import de.robv.android.xposed.XposedHelpers
@@ -27,20 +28,36 @@ class ArrowPainter(private val remap: Remap) {
     /** New state arrived (constructor hook): draw if we already have an analysis for it. */
     fun onGameState(state: Any) {
         val fen = BridgePublisher.lastAnalyzedFen ?: return
-        val best = BridgePublisher.lastBestMove ?: return
+        val best = BridgePublisher.lastBestMove
         // staleness guard: only draw a move computed for THIS position
-        if (BridgePublisher.lastBestMoveFen != fen) return
-        draw(best, fen)
+        if (best != null && BridgePublisher.lastBestMoveFen == fen) {
+            draw(best, fen)
+            return
+        }
+        // No best for this position (opponent's turn): repaint the live red
+        // prediction instead, if it belongs to this exact position.
+        val ponder = BridgePublisher.lastPonderMove
+        if (ponder != null && BridgePublisher.lastPonderFen == fen) {
+            drawPrediction(ponder, fen)
+        }
     }
 
     /** Board controller rendered a state: also the moment we can (re)draw. */
     fun onRenderedState(state: Any) {
-        val best = BridgePublisher.lastBestMove ?: return
-        // Staleness guard (mirrors onGameState): never repaint an arrow computed
-        // for an older position onto the freshly rendered board.
+        // Staleness guard: never repaint an arrow computed for an older
+        // position onto the freshly rendered board. Best (yellow) wins over
+        // prediction (red) — the two can never share a fen (best is computed
+        // for our turn, prediction for the opponent's), so this is exclusive.
         val analysedFen = BridgePublisher.lastAnalyzedFen ?: return
-        if (BridgePublisher.lastBestMoveFen != analysedFen) return
-        draw(best, analysedFen)
+        val best = BridgePublisher.lastBestMove
+        if (best != null && BridgePublisher.lastBestMoveFen == analysedFen) {
+            draw(best, analysedFen)
+            return
+        }
+        val ponder = BridgePublisher.lastPonderMove
+        if (ponder != null && BridgePublisher.lastPonderFen == analysedFen) {
+            drawPrediction(ponder, analysedFen)
+        }
     }
 
     /** Entry point invoked by the command dispatcher: paint `uciMove` (e.g. "e2e4"). */
@@ -53,6 +70,17 @@ class ArrowPainter(private val remap: Remap) {
         mainHandler.post { drawOnMain(uciMove, from, to) }
     }
 
+    /**
+     * Predicted enemy reply: same gate/mechanics as [draw], but RED and with NO
+     * ack back to the companion (an ack would read as "bestmove confirmed" in
+     * the event log) and NEVER routed to autoplay (dispatcher only draws).
+     */
+    fun drawPrediction(uciMove: String, fen: String) {
+        val (from, to) = splitUci(uciMove) ?: return
+        if (!BridgePublisher.needDraw(fen, uciMove)) return
+        mainHandler.post { drawOnMain(uciMove, from, to, colorName = "RED") }
+    }
+
     // Renderer pokes (clear + s()) landing mid-animation are the prime suspect for
     // wedging Duolingo's board state machine (manual AND auto stuck; auto more, since
     // it also taps). So draws wait for a quiet moment: no hook trigger for a short
@@ -60,10 +88,13 @@ class ArrowPainter(private val remap: Remap) {
     private val QUIET_MS = 250L
     private val QUIET_CAP_MS = 1200L
 
-    private fun drawOnMain(uciMove: String, from: String, to: String, waitedMs: Long = 0) {
+    private fun drawOnMain(
+        uciMove: String, from: String, to: String,
+        waitedMs: Long = 0, colorName: String = "YELLOW",
+    ) {
         val sinceTrigger = System.currentTimeMillis() - BridgePublisher.lastTriggerAt
         if (sinceTrigger < QUIET_MS && waitedMs < QUIET_CAP_MS) {
-            mainHandler.postDelayed({ drawOnMain(uciMove, from, to, waitedMs + 300) }, 300)
+            mainHandler.postDelayed({ drawOnMain(uciMove, from, to, waitedMs + 300, colorName) }, 300)
             return
         }
         val controller = BridgeAccess.boardController ?: run {
@@ -74,7 +105,7 @@ class ArrowPainter(private val remap: Remap) {
             val m = resolveDrawMethod(controller) ?: run {
                 MainHook.log("!! controller.s not resolved; overlay fallback")
                 OverlayFallback.ensure()
-                OverlayFallback.drawArrow(from, to)
+                OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
                 return
             }
             val loader = controller.javaClass.classLoader
@@ -84,28 +115,30 @@ class ArrowPainter(private val remap: Remap) {
             val squareClz = remap.resolveClass(loader, "square") ?: run {
                 MainHook.log("!! square class not resolved (remap.json stale? regenerate with tools/remap.py)")
                 OverlayFallback.ensure()
-                OverlayFallback.drawArrow(from, to)
+                OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
                 return
             }
             val fromSq = makeSquare(squareClz, from) ?: return
             val toSq = makeSquare(squareClz, to) ?: return
             val solid = enumConstant(loader, "arrowType", "SOLID")
-            val yellow = enumConstant(loader, "arrowColor", "YELLOW")
-            if (solid == null || yellow == null) {
+            val color = resolveArrowColor(loader, colorName)
+            if (solid == null || color == null) {
                 MainHook.log("!! enum constants missing")
                 return
             }
             // Mirror Duolingo's own game-review flow (hq4.n): reset arrows first, then draw.
             clearNow(controller)
-            // s(from, to, animate=false, SOLID, mode=0, YELLOW) — CONFIRMED against hq4.j
+            // s(from, to, animate=false, SOLID, mode=0, color) — CONFIRMED against hq4.j
             // and against the live 6.85.7 signature seen in the LSPosed log.
-            m.invoke(controller, fromSq, toSq, false, solid, 0, yellow)
-            BridgePublisher.markArrowDrawn(uciMove)
-            MainHook.log("arrow drawn: $uciMove")
+            m.invoke(controller, fromSq, toSq, false, solid, 0, color)
+            // Ack only real bestmoves: a prediction ack would masquerade as a
+            // confirmed recommendation in the companion's event log.
+            if (colorName == "YELLOW") BridgePublisher.markArrowDrawn(uciMove)
+            MainHook.log("arrow drawn: $uciMove ($colorName)")
         } catch (t: Throwable) {
             MainHook.log("arrow draw failed: $t")
             OverlayFallback.ensure()
-            OverlayFallback.drawArrow(from, to)
+            OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
         }
     }
 
@@ -151,6 +184,33 @@ class ArrowPainter(private val remap: Remap) {
         sMethod = m
         return m
     }
+
+    /**
+     * ArrowColor probe: RED is assumed but NOT confirmed in 6.85.7 (only YELLOW
+     * is). Resolved live once; on miss the available values are logged to the
+     * LSPosed log and we fall back to YELLOW — the arrow always appears, worst
+     * case in the classic color.
+     */
+    @Volatile private var probedColors: String? = null
+
+    private fun resolveArrowColor(loader: ClassLoader, name: String): Any? {
+        enumConstant(loader, "arrowColor", name)?.let { return it }
+        if (probedColors == null) {
+            probedColors = try {
+                remap.resolveClass(loader, "arrowColor")
+                    ?.enumConstants?.map { (it as java.lang.Enum<*>).name() }?.toString()
+            } catch (_: Throwable) {
+                "?"
+            }
+            MainHook.log("arrowColor has no $name; available=$probedColors (falling back to YELLOW)")
+        }
+        return enumConstant(loader, "arrowColor", "YELLOW")
+    }
+
+    /** Best-effort overlay mirror of the native arrow color (fallback path only). */
+    private fun fallbackColor(colorName: String): Int =
+        if (colorName == "RED") Color.argb(190, 255, 60, 40)
+        else Color.argb(190, 255, 210, 0)
 
     /** ge4 ctor is CONFIRMED (row: Int from rank 1, col: Int) — see docs §Board & squares. */
     private fun makeSquare(squareClz: Class<*>, coord: String): Any? {

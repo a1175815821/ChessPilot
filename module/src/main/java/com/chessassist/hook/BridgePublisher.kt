@@ -14,6 +14,15 @@ object BridgePublisher {
     @Volatile var lastBestMove: String? = null
     @Volatile var lastBestMoveFen: String? = null
     @Volatile var lastBestMoveAt: Long = 0
+    /**
+     * Companion's predicted enemy reply (red arrow). Strictly display-only:
+     * never feeds autoplay freshness, staleness gates, or the (fen,move) best
+     * path. Repainted on renders while it matches the analysed FEN, cleared by
+     * any bestmove draw (draw path resets arrows first) or "clearponder".
+     */
+    @Volatile var lastPonderMove: String? = null
+    @Volatile var lastPonderFen: String? = null
+    @Volatile var lastPonderAt: Long = 0
     @Volatile var autoPlayEnabled: Boolean = false
     @Volatile var lastAnalyzedFen: String? = null
 
@@ -38,6 +47,11 @@ object BridgePublisher {
         drawnMove = null
     }
 
+    /** True when the currently drawn arrow IS the ponder prediction (safe to clear it alone). */
+    @Synchronized
+    fun isPonderDrawn(): Boolean =
+        drawnFen != null && drawnFen == lastPonderFen && drawnMove == lastPonderMove
+
     /**
      * New game/lesson: drop the previous game's sticky state. Without this, the old
      * userColor inverts the new game (white opening skipped as "opponent's turn"),
@@ -50,6 +64,9 @@ object BridgePublisher {
         lastBestMove = null
         lastBestMoveFen = null
         lastBestMoveAt = 0
+        lastPonderMove = null
+        lastPonderFen = null
+        lastPonderAt = 0
         clearDrawn()
         MainHook.log("new game: sticky state reset")
     }

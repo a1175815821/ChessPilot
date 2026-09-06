@@ -50,6 +50,22 @@ object CommandLoop {
                     }
                 }
                 "clear" -> ensurePainter()?.clear()
+                // Ponder prediction (display-only red arrow): never autoplayed,
+                // never touches bestmove state. Staleness rides the same
+                // (fen,move) gate; any bestmove draw resets arrows first.
+                "ponder" -> {
+                    val uci = cmd["move"] ?: return
+                    val fen = cmd["fen"] ?: BridgePublisher.lastAnalyzedFen ?: return
+                    BridgePublisher.lastPonderMove = uci
+                    BridgePublisher.lastPonderFen = fen
+                    BridgePublisher.lastPonderAt = System.currentTimeMillis()
+                    ensurePainter()?.drawPrediction(uci, fen)
+                }
+                // Drop the red prediction without touching the yellow best arrow
+                // (companion sends this when ponder goes quiet with no successor).
+                "clearponder" -> {
+                    if (BridgePublisher.isPonderDrawn()) ensurePainter()?.clear()
+                }
                 // Kept for backward compat: remembered but no longer gates autoplay.
                 "config" -> BridgePublisher.autoPlayEnabled = cmd["autoplay"] == "1"
                 // Semi-auto: user tapped the banner button — play the exact pair the

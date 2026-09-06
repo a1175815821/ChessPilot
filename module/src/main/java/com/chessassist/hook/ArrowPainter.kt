@@ -21,6 +21,11 @@ import de.robv.android.xposed.XposedHelpers
  */
 class ArrowPainter(private val remap: Remap) {
 
+    companion object {
+        /** Prediction arrow color — one-line knob for color visibility tests. */
+        const val PREDICTION_COLOR = "GRAY"
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var sMethod: java.lang.reflect.Method? = null
@@ -76,9 +81,19 @@ class ArrowPainter(private val remap: Remap) {
      * the event log) and NEVER routed to autoplay (dispatcher only draws).
      */
     fun drawPrediction(uciMove: String, fen: String) {
+        drawPredictionColored(uciMove, fen, PREDICTION_COLOR)
+    }
+
+    /**
+     * GRAY is the current prediction color (was RED). RED resolves but never
+     * shows on the live board (renders invisible — likely missing asset in the
+     * live artboard; the enum exists game-wide, probably for post-game review).
+     * Single constant so the next color test is a one-line change.
+     */
+    fun drawPredictionColored(uciMove: String, fen: String, colorName: String) {
         val (from, to) = splitUci(uciMove) ?: return
         if (!BridgePublisher.needDraw(fen, uciMove)) return
-        mainHandler.post { drawOnMain(uciMove, from, to, colorName = "RED") }
+        mainHandler.post { drawOnMain(uciMove, from, to, colorName = colorName) }
     }
 
     // Renderer pokes (clear + s()) landing mid-animation are the prime suspect for
@@ -211,9 +226,11 @@ class ArrowPainter(private val remap: Remap) {
     }
 
     /** Best-effort overlay mirror of the native arrow color (fallback path only). */
-    private fun fallbackColor(colorName: String): Int =
-        if (colorName == "RED") Color.argb(190, 255, 60, 40)
-        else Color.argb(190, 255, 210, 0)
+    private fun fallbackColor(colorName: String): Int = when (colorName) {
+        "RED" -> Color.argb(190, 255, 60, 40)
+        "GRAY" -> Color.argb(190, 160, 160, 160)
+        else -> Color.argb(190, 255, 210, 0)
+    }
 
     /** ge4 ctor is CONFIRMED (row: Int from rank 1, col: Int) — see docs §Board & squares. */
     private fun makeSquare(squareClz: Class<*>, coord: String): Any? {

@@ -49,6 +49,9 @@ class MainActivity : Activity() {
     private lateinit var speedBar: SeekBar
     private lateinit var berserkSwitch: Switch
     private lateinit var ponderSwitch: Switch
+    private lateinit var funcHeader: TextView
+    private lateinit var funcBox: LinearLayout
+    private lateinit var funcRow: LinearLayout
     private lateinit var backendLabel: TextView
     private lateinit var backendRow: LinearLayout
     private var backendButtons: List<Button> = emptyList()
@@ -179,22 +182,63 @@ class MainActivity : Activity() {
         row2.addView(overlayBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(row2)
 
-        // ---- autoplay ----
+        // ---- function settings (expandable): the three live switches in one row ----
+        funcHeader = TextView(this).apply {
+            textSize = 15f
+            paint.isFakeBoldText = true
+            setPadding(0, pad / 2, 0, 0)
+            setOnClickListener { toggleFunc() }
+        }
+        root.addView(funcHeader)
+        funcBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        funcRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         autoSwitch = Switch(this).apply {
             text = "自动走棋"
-            textSize = 15f
+            textSize = 13f
             isChecked = BridgeSettings.autoPlayEnabled
             setOnCheckedChangeListener { _, on ->
                 BridgeSettings.autoPlayEnabled = on
                 BridgeSettings.save(this@MainActivity)
             }
         }
-        root.addView(autoSwitch)
-        root.addView(TextView(this).apply {
-            text = "全自动模拟触摸下棋，谨慎使用。"
+        berserkSwitch = Switch(this).apply {
+            text = "狂暴模式"
+            textSize = 13f
+            isChecked = BridgeSettings.berserk
+            setOnCheckedChangeListener { _, on ->
+                BridgeSettings.berserk = on
+                BridgeSettings.save(this@MainActivity)
+                // Live-apply: the loop recreates the engine same-generation.
+                EngineLoop.restartEngine(if (on) "狂暴开" else "狂暴关")
+                try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
+            }
+        }
+        ponderSwitch = Switch(this).apply {
+            text = "极限思考"
+            textSize = 13f
+            isChecked = BridgeSettings.ponderEnabled
+            setOnCheckedChangeListener { _, on ->
+                BridgeSettings.ponderEnabled = on
+                BridgeSettings.save(this@MainActivity)
+                // No engine restart: the loop reads the flag live every iteration.
+                try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
+            }
+        }
+        for (sw in listOf(autoSwitch, berserkSwitch, ponderSwitch)) {
+            funcRow.addView(sw, LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            ))
+        }
+        funcBox.addView(funcRow)
+        funcBox.addView(TextView(this).apply {
+            text = "自动走棋：全自动模拟触摸，谨慎使用。狂暴：极限资源，功耗提高。极限思考：对手回合同步预测。"
             textSize = 12f
             setTextColor(Color.parseColor("#9E9E9E"))
         })
+        root.addView(funcBox)
+        updateFuncHeader()
 
         // ---- advanced (collapsed) ----
         advancedHeader = TextView(this).apply {
@@ -208,41 +252,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
-        berserkSwitch = Switch(this).apply {
-            text = "狂暴模式"
-            textSize = 15f
-            isChecked = BridgeSettings.berserk
-            setOnCheckedChangeListener { _, on ->
-                BridgeSettings.berserk = on
-                BridgeSettings.save(this@MainActivity)
-                // Live-apply: the loop recreates the engine same-generation.
-                EngineLoop.restartEngine(if (on) "狂暴开" else "狂暴关")
-                try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
-            }
-        }
-        advancedBox.addView(berserkSwitch)
-        advancedBox.addView(TextView(this).apply {
-            text = "极限资源配给强计算，功耗提高。"
-            textSize = 12f
-            setTextColor(Color.parseColor("#9E9E9E"))
-        })
-        ponderSwitch = Switch(this).apply {
-            text = "极限思考"
-            textSize = 15f
-            isChecked = BridgeSettings.ponderEnabled
-            setOnCheckedChangeListener { _, on ->
-                BridgeSettings.ponderEnabled = on
-                BridgeSettings.save(this@MainActivity)
-                // No engine restart: the loop reads the flag live every iteration.
-                try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
-            }
-        }
-        advancedBox.addView(ponderSwitch)
-        advancedBox.addView(TextView(this).apply {
-            text = "对手走棋时同步预测，功耗提高。"
-            textSize = 12f
-            setTextColor(Color.parseColor("#9E9E9E"))
-        })
         timeLabel = TextView(this).apply { textSize = 14f }
         advancedBox.addView(timeLabel)
         timeBar = SeekBar(this).apply {
@@ -370,10 +379,12 @@ class MainActivity : Activity() {
             typeface = android.graphics.Typeface.MONOSPACE
         }
         eventsScroll.addView(events)
+        // Fixed log height: the whole page scrolls now (weight needs a bounded
+        // parent, which a ScrollView is not).
         root.addView(eventsScroll, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(220)
         ))
-        setContentView(root)
+        setContentView(ScrollView(this).apply { addView(root) })
         refreshSettings()
     }
 
@@ -426,6 +437,18 @@ class MainActivity : Activity() {
         } else {
             Toast.makeText(this, "没找到多邻国", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private var funcOpen = true
+
+    private fun toggleFunc() {
+        funcOpen = !funcOpen
+        funcBox.visibility = if (funcOpen) View.VISIBLE else View.GONE
+        updateFuncHeader()
+    }
+
+    private fun updateFuncHeader() {
+        funcHeader.text = "功能设置 " + if (funcOpen) "▼" else "▶"
     }
 
     private var advancedOpen = false

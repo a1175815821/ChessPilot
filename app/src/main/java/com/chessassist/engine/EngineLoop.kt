@@ -275,6 +275,16 @@ object EngineLoop {
     }
 
     /**
+     * True when this fen's ponder guess already went out. The bridge is
+     * latest-only: a clear pushed AFTER the ponder push wins the race and
+     * eats the prediction (the "shows once at game start, then never" bug),
+     * so the turn-flip clear must skip fens with a live guess — the
+     * prediction draw resets arrows itself before painting.
+     */
+    private fun isPonderPushedFor(fen: String): Boolean =
+        lastPushedPonderKey?.startsWith("$fen|") == true
+
+    /**
      * Opponent's turn: start/keep pondering our reply to the predicted move.
      * Per-fen gated (a ponder job is one position); disabling the switch or a
      * missing prediction stops any running job. Never throws.
@@ -1062,14 +1072,13 @@ object EngineLoop {
                     if (fen != lastSkippedFen) {
                         lastSkippedFen = fen
                         // Turn flipped to the opponent: retire OUR yellow arrow
-                        // from the board NOW. Otherwise it lingers through fast
-                        // opponent turns (loop never sees a settled position,
-                        // ponder never engages) and reads as a "yellow
-                        // prediction" — the exact confusion reported live.
-                        // Text conclusion survives in the overlay; the board
-                        // goes blank until the red prediction lands (or our
-                        // next analysis repaints yellow). Once per fen.
-                        BridgeServer.pushClear()
+                        // from the board — BUT only when no ponder guess went
+                        // out for this fen (see isPonderPushedFor): the bridge
+                        // is latest-only and a clear would eat the prediction.
+                        // Otherwise the lingering yellow reads as a "yellow
+                        // prediction" through fast opponent turns. Text
+                        // conclusion survives in the overlay either way.
+                        if (!isPonderPushedFor(fen)) BridgeServer.pushClear()
                         // Mirror the ponder state on the floating overlay, only
                         // while it's the opponent's turn: a live job appends
                         // 极限思考中 to the waiting line. Title untouched.

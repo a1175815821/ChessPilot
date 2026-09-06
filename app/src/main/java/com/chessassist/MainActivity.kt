@@ -12,9 +12,13 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -45,6 +49,12 @@ class MainActivity : Activity() {
     private lateinit var speedBar: SeekBar
     private lateinit var berserkSwitch: Switch
     private lateinit var ponderSwitch: Switch
+    private lateinit var backendLabel: TextView
+    private lateinit var backendRow: LinearLayout
+    private var backendButtons: List<Button> = emptyList()
+    private lateinit var hostInput: EditText
+    private lateinit var portInput: EditText
+    private lateinit var testBtn: Button
     private lateinit var advancedBox: LinearLayout
     private lateinit var advancedHeader: TextView
     private lateinit var eventsHeader: TextView
@@ -257,6 +267,86 @@ class MainActivity : Activity() {
             setOnSeekBarChangeListener(simpleSeek { refreshSettings() })
         }
         advancedBox.addView(speedBar)
+        // ---- compute backend (local phone engine vs PC remote engine) ----
+        backendLabel = TextView(this).apply {
+            text = "算力后端"
+            textSize = 14f
+            setPadding(0, pad / 2, 0, 0)
+        }
+        advancedBox.addView(backendLabel)
+        backendRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val specs = listOf(
+            "本地" to BridgeSettings.BACKEND_LOCAL,
+            "自动" to BridgeSettings.BACKEND_AUTO,
+            "远程电脑" to BridgeSettings.BACKEND_REMOTE,
+        )
+        backendButtons = specs.map { (label, value) ->
+            Button(this).apply {
+                text = label
+                textSize = 13f
+                setOnClickListener {
+                    BridgeSettings.backend = value
+                    BridgeSettings.save(this@MainActivity)
+                    updateBackendButtons()
+                    // Re-resolve engines through the new policy (also lifts
+                    // any remote quarantine). 1~2 s gap, game untouched.
+                    EngineLoop.restartEngine("后端切换到$label")
+                    try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
+                }
+            }.also {
+                backendRow.addView(it, LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                ))
+            }
+        }
+        advancedBox.addView(backendRow)
+        hostInput = EditText(this).apply {
+            hint = "电脑IP，如 192.168.1.5"
+            textSize = 14f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setText(BridgeSettings.pcHost)
+            addTextChangedListener(saveOnType { s ->
+                BridgeSettings.pcHost = s.trim().take(64)
+            })
+        }
+        advancedBox.addView(hostInput)
+        portInput = EditText(this).apply {
+            hint = "端口（默认 41718）"
+            textSize = 14f
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(BridgeSettings.pcPort.toString())
+            addTextChangedListener(saveOnType { s ->
+                BridgeSettings.pcPort = s.toIntOrNull()?.coerceIn(1, 65535) ?: 41718
+            })
+        }
+        advancedBox.addView(portInput)
+        testBtn = Button(this).apply {
+            text = "测试远程连接"
+            textSize = 14f
+            setOnClickListener {
+                saveHostPort()
+                isEnabled = false
+                Thread {
+                    val msg = EngineLoop.testRemote()
+                    // Success means the new host/port works: re-resolve now
+                    // so it takes effect without waiting for a new game.
+                    if (msg.startsWith("远程可用")) {
+                        EngineLoop.restartEngine("远程连通性确认")
+                    }
+                    ui.post {
+                        isEnabled = true
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                        try { renderStatus(EngineLoop.snapshot()) } catch (_: Throwable) {}
+                    }
+                }.start()
+            }
+        }
+        advancedBox.addView(testBtn)
+        advancedBox.addView(TextView(this).apply {
+            text = "自动=远程优先，断线秒切本地，下局重连；远程的线程/时长在电脑脚本里配，手机滑杆仅本地有效。"
+            textSize = 12f
+            setTextColor(Color.parseColor("#9E9E9E"))
+        })
         root.addView(advancedBox)
         updateAdvancedHeader()
 
@@ -304,6 +394,7 @@ class MainActivity : Activity() {
             appendLine("Hook：${s.hookLine}")
             appendLine("NNUE：${s.nnue}")
             appendLine("引擎：${s.engineResLine}")
+            appendLine("后端：${s.backendLine}")
             appendLine("局面：${s.fen.take(48)}")
             appendLine("思考：${s.settingsLine}　自动：${s.autoLine}")
             appendLine("极限思考：${s.ponderLine}")
@@ -354,6 +445,36 @@ class MainActivity : Activity() {
         eventsScroll.visibility = if (eventsOpen) View.VISIBLE else View.GONE
     }
 
+    /** Persist backend host/port edits as the user types (no restart; the test
+     * button or backend switch re-resolves engines when the user is done). */
+    private fun saveOnType(onChange: (String) -> Unit) = object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        override fun afterTextChanged(s: Editable?) {
+            onChange(s?.toString().orEmpty())
+            BridgeSettings.save(this@MainActivity)
+        }
+    }
+
+    private fun saveHostPort() {
+        BridgeSettings.pcHost = hostInput.text.toString().trim().take(64)
+        BridgeSettings.pcPort = portInput.text.toString().toIntOrNull()?.coerceIn(1, 65535) ?: 41718
+        BridgeSettings.save(this)
+    }
+
+    /** Selected backend button reads disabled; the other two stay tappable. */
+    private fun updateBackendButtons() {
+        val cur = BridgeSettings.backend
+        val values = listOf(
+            BridgeSettings.BACKEND_LOCAL,
+            BridgeSettings.BACKEND_AUTO,
+            BridgeSettings.BACKEND_REMOTE,
+        )
+        backendButtons.forEachIndexed { i, b ->
+            b.isEnabled = values.getOrNull(i) != cur
+        }
+    }
+
     private fun simpleSeek(onChange: () -> Unit) = object : SeekBar.OnSeekBarChangeListener {
         override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
             if (fromUser) onChange()
@@ -394,6 +515,14 @@ class MainActivity : Activity() {
         autoSwitch.isChecked = BridgeSettings.autoPlayEnabled
         berserkSwitch.isChecked = BridgeSettings.berserk
         ponderSwitch.isChecked = BridgeSettings.ponderEnabled
+        updateBackendButtons()
+        if (hostInput.text.toString() != BridgeSettings.pcHost) {
+            hostInput.setText(BridgeSettings.pcHost)
+        }
+        val portStr = BridgeSettings.pcPort.toString()
+        if (portInput.text.toString() != portStr) {
+            portInput.setText(portStr)
+        }
         timeBar.progress = ((BridgeSettings.movetimeMs / 100).toInt() - 1).coerceIn(0, 29)
         depthBar.progress = BridgeSettings.searchDepth.coerceIn(0, 30)
         speedBar.progress = ((BridgeSettings.autoPlayDelayMs - 150) / 50).toInt().coerceIn(0, 27)

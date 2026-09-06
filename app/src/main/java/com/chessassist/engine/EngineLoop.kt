@@ -306,29 +306,15 @@ object EngineLoop {
             val t = ponderThread
             if (fen == ponderFen && t != null && t.isAlive) return // already on it
             ensurePonderStopped()
-            // P0 isolation: ponder gets its OWN engine process. A ponder-engine
-            // failure only costs one ponder round — the main client (and the
-            // analysis path) is never touched here.
+            // P0 isolation: ponder gets its OWN engine (process or remote
+            // connection). A ponder-engine failure only costs one ponder
+            // round — the main client (and the analysis path) is never
+            // touched here.
             var pc = ponderClient
             if (pc == null || !pc.isRunning()) {
                 if (System.currentTimeMillis() - lastPonderStartFailAt < PONDER_START_RETRY_MS) return
-                pc = try {
-                    StockfishClient(appContext!!).also { it.start() }
-                } catch (e: Throwable) {
-                    lastPonderStartFailAt = System.currentTimeMillis()
-                    Log.w(TAG, "ponder engine start failed: ${e.message?.take(80)}")
-                    return
-                }
-                // Lost the race with stop()/a newer generation during the
-                // (seconds-long) handshake: shut it down, don't orphan the
-                // process (it would ponder into the void for up to 180 s and
-                // squat on its Hash until the app process dies).
-                if (!running.get() || gen != workerGen) {
-                    try { pc.stop() } catch (_: Throwable) {}
-                    return
-                }
+                pc = createPonderClient(gen) ?: return
                 ponderClient = pc
-                Log.i(TAG, "ponder engine up (dedicated process)")
             }
             val c = pc
             val gen = ++ponderGen
@@ -428,6 +414,122 @@ object EngineLoop {
         }
     }
 
+    // ------------------------------------------------- backend policy -----
+    // Auto backend (remote preferred, local fallback): remote is tried first;
+    // ANY failure sticks to local until the next game (remoteDownSticky) with
+    // a 15 s retry floor (remoteCoolUntil) so a dead PC doesn't hammer
+    // reconnects every loop iteration. A fresh game re-prefers remote.
+    private const val REMOTE_RETRY_MS = 15_000L
+    @Volatile private var remoteDownSticky: Boolean = false
+    @Volatile private var remoteCoolUntil: Long = 0L
+
+    /** Which engine actually served the last analysis (status screen). */
+    @Volatile private var lastBackendUsed: String = "本地"
+        private set
+
+    private fun useRemote(): Boolean =
+        BridgeSettings.backend != BridgeSettings.BACKEND_LOCAL &&
+            !remoteDownSticky &&
+            System.currentTimeMillis() >= remoteCoolUntil
+
+    /** Remote failed: stick to local, note once (per game) why. */
+    private fun markRemoteDown(cause: String?) {
+        remoteCoolUntil = System.currentTimeMillis() + REMOTE_RETRY_MS
+        if (!remoteDownSticky) {
+            remoteDownSticky = true
+            lastBackendUsed = "本地"
+            val why = cause?.take(100) ?: "连接中断"
+            note("远程算力不可用，已切本地：$why（下局重连）")
+            Log.w(TAG, "remote down, local fallback: $why")
+        } else {
+            lastBackendUsed = "本地"
+        }
+    }
+
+    /**
+     * Main engine factory (worker thread): remote first when wanted, local
+     * fallback that never throws out of here for remote causes (a throwing
+     * local start still propagates to the loop's restart machinery).
+     */
+    private fun createMainClient(): EngineClient {
+        if (useRemote()) {
+            try {
+                val rc = RemoteEngineClient().also { it.start() }
+                lastBackendUsed = "远程"
+                note("远程算力已连接（${BridgeSettings.pcHost}:${BridgeSettings.pcPort}，" +
+                    "${rc.loadedNnue ?: ""}）")
+                return rc
+            } catch (e: Throwable) {
+                markRemoteDown(e.message)
+            }
+        }
+        lastBackendUsed = "本地"
+        return StockfishClient(appContext!!).also { it.start() }
+    }
+
+    /**
+     * Ponder engine factory (worker thread): separate connection when remote
+     * (reader discipline: one reader per socket, same as separate processes
+     * locally), local dedicated process as fallback. Null = skip this round.
+     */
+    private fun createPonderClient(gen: Long): EngineClient? {
+        if (useRemote()) {
+            try {
+                val rc = RemoteEngineClient().also { it.start() }
+                if (!running.get() || gen != workerGen) {
+                    try { rc.stop() } catch (_: Throwable) {}
+                    return null
+                }
+                Log.i(TAG, "remote ponder up")
+                return rc
+            } catch (e: Throwable) {
+                markRemoteDown(e.message)
+                // fall through to the local ponder engine below
+            }
+        }
+        return try {
+            val lc = StockfishClient(appContext!!).also { it.start() }
+            // Same orphan guard as the old inline code (v0.2 Bug 2).
+            if (!running.get() || gen != workerGen) {
+                try { lc.stop() } catch (_: Throwable) {}
+                return null
+            }
+            Log.i(TAG, "ponder engine up (dedicated process)")
+            lc
+        } catch (e: Throwable) {
+            lastPonderStartFailAt = System.currentTimeMillis()
+            Log.w(TAG, "ponder engine start failed: ${e.message?.take(80)}")
+            null
+        }
+    }
+
+    /** One-line backend state for the status screen. */
+    fun backendLine(): String {
+        val want = BridgeSettings.backendShort()
+        return if (want == "本地") "本地引擎"
+        else "$want（当前$lastBackendUsed）"
+    }
+
+    /**
+     * Test the PC connection (call on a background thread): connects, runs
+     * the info+ping handshake, reports engine name + RTT. Never throws.
+     */
+    fun testRemote(): String {
+        if (BridgeSettings.pcHost.trim().isEmpty()) return "先填电脑IP（高级设置→算力后端）"
+        return try {
+            val rc = RemoteEngineClient().also { it.start() }
+            val msg = "远程可用：${rc.loadedNnue ?: "?"} · " +
+                "${rc.lastThreads}线 ${rc.lastHashMb}MB · RTT ${rc.lastRttMs}ms"
+            try { rc.stop() } catch (_: Throwable) {}
+            note("测试远程连接：$msg")
+            msg
+        } catch (e: Throwable) {
+            val msg = "远程不通：${e.message?.take(120)}"
+            note("测试远程连接：$msg")
+            msg
+        }
+    }
+
     /**
      * Apply changed engine settings (e.g. berserk toggle) live: drop the client
      * and let the same-generation loop recreate it on the next iteration —
@@ -437,6 +539,10 @@ object EngineLoop {
     fun restartEngine(reason: String) {
         if (!running.get()) return
         note("引擎设置变更（$reason），重启引擎…")
+        // Settings changed: lift the remote quarantine too — a fresh attempt
+        // is cheap and this is exactly when the user changed something.
+        remoteDownSticky = false
+        remoteCoolUntil = 0L
         // Ponder process FIRST: stop() destroys it, which unblocks a parked
         // ponder reader instantly — the join inside ensurePonderStopped() then
         // returns fast even though this runs on the main thread (settings UI).
@@ -689,6 +795,7 @@ object EngineLoop {
         val nnue: String,
         val engineResLine: String,
         val ponderLine: String,
+        val backendLine: String,
         val fen: String,
         val bestMove: String?,
         val bestAgo: String,
@@ -728,6 +835,7 @@ object EngineLoop {
             nnue = c?.loadedNnue ?: "-",
             engineResLine = engineResLine(c),
             ponderLine = ponderLine(),
+            backendLine = backendLine(),
             fen = currentFen ?: "-",
             bestMove = lastBestMove,
             bestAgo = if (lastBestMove != null) ago(lastBestMoveAt) else "",
@@ -790,6 +898,7 @@ object EngineLoop {
             appendLine("Hook 连接：$hookState")
             appendLine("NNUE：${c?.loadedNnue ?: "-"}")
             appendLine("引擎配置：${engineResLine(c)}")
+            appendLine("算力后端：${backendLine()}")
             appendLine("极限思考：${ponderLine()}")
             appendLine("当前 FEN：${currentFen ?: "-"}")
             appendLine("最佳招法：${lastBestMove ?: "-"}${if (lastBestMove != null) "（${ago(lastBestMoveAt)}${if (lastDepth > 0) " · 深度$lastDepth" else ""}）" else ""}")
@@ -841,7 +950,7 @@ object EngineLoop {
                         client = null
                     }
                     engineState = STATE_STARTING
-                    c = StockfishClient(appContext!!).also { it.start() }
+                    c = createMainClient()
                     // Lost the race with a newer generation while starting (handshake
                     // takes seconds): shut our engine down, don't clobber its client.
                     if (isStale()) {
@@ -884,6 +993,21 @@ object EngineLoop {
                     lastSkippedFen = null
                     lastPonderMove = null
                     ensurePonderStopped()
+                    // New game lifts the remote quarantine: if the previous
+                    // game fell back to local, retry remote now. Drop local
+                    // clients so the loop recreates through the policy.
+                    remoteDownSticky = false
+                    remoteCoolUntil = 0L
+                    if (BridgeSettings.backend != BridgeSettings.BACKEND_LOCAL) {
+                        if (client is StockfishClient) {
+                            try { client?.stop() } catch (_: Throwable) {}
+                            client = null
+                        }
+                        if (ponderClient is StockfishClient) {
+                            try { ponderClient?.stop() } catch (_: Throwable) {}
+                            ponderClient = null
+                        }
+                    }
                     note("新开局，已清空上局残留")
                 }
                 prevFen = fen
@@ -992,6 +1116,10 @@ object EngineLoop {
                 if (freshFen != null && freshFen != fen) continue
                 c = client
                 if (c == null || !c.isRunning()) {
+                    // Remote died mid-game (timeout streak / broken socket):
+                    // quarantine it so the recreate above falls back to local
+                    // instead of hammering reconnects every iteration.
+                    if (c is RemoteEngineClient) markRemoteDown("连接中断")
                     try { c?.stop() } catch (_: Throwable) {}
                     client = null
                     continue

@@ -14,6 +14,13 @@ object BridgeSettings {
     private const val K_DELAY = "autoplay_delay_ms"
     private const val K_PONDER = "ponder"
     private const val K_BERSERK = "berserk"
+    private const val K_BACKEND = "backend"
+    private const val K_PCHOST = "pc_host"
+    private const val K_PCPORT = "pc_port"
+
+    const val BACKEND_LOCAL = "local"
+    const val BACKEND_AUTO = "auto"
+    const val BACKEND_REMOTE = "remote"
 
     /** Auto-play Stockfish's move on the real board. Default OFF (ToS/ban risk). */
     @Volatile var autoPlayEnabled: Boolean = false
@@ -51,6 +58,20 @@ object BridgeSettings {
      */
     @Volatile var ponderEnabled: Boolean = false
 
+    /**
+     * Compute backend: [BACKEND_LOCAL] (phone engine only), [BACKEND_AUTO]
+     * (PC preferred, instant local fallback + reconnect), [BACKEND_REMOTE]
+     * (same mechanics as auto, but the user explicitly wants PC). Default
+     * local: zero behavior change until the user opts in.
+     */
+    @Volatile var backend: String = BACKEND_LOCAL
+
+    /** PC engine host (LAN IP) for remote/auto backends. Blank = unset. */
+    @Volatile var pcHost: String = ""
+
+    /** PC engine port (pc_engine.py --port, default 41718). */
+    @Volatile var pcPort: Int = 41718
+
     fun load(context: Context) {
         try {
             val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -60,6 +81,11 @@ object BridgeSettings {
             autoPlayDelayMs = p.getLong(K_DELAY, 450L).coerceIn(150L, 1500L)
             berserk = p.getBoolean(K_BERSERK, false)
             ponderEnabled = p.getBoolean(K_PONDER, false)
+            backend = p.getString(K_BACKEND, BACKEND_LOCAL)?.takeIf {
+                it == BACKEND_LOCAL || it == BACKEND_AUTO || it == BACKEND_REMOTE
+            } ?: BACKEND_LOCAL
+            pcHost = p.getString(K_PCHOST, "")?.trim().orEmpty().take(64)
+            pcPort = p.getInt(K_PCPORT, 41718).coerceIn(1, 65535)
         } catch (_: Throwable) {
         }
     }
@@ -73,6 +99,9 @@ object BridgeSettings {
                 .putLong(K_DELAY, autoPlayDelayMs)
                 .putBoolean(K_BERSERK, berserk)
                 .putBoolean(K_PONDER, ponderEnabled)
+                .putString(K_BACKEND, backend)
+                .putString(K_PCHOST, pcHost)
+                .putInt(K_PCPORT, pcPort)
                 .apply()
         } catch (_: Throwable) {
         }
@@ -83,6 +112,12 @@ object BridgeSettings {
             if (ponderEnabled) " · 极限思考开" else ""
 
     fun modeShort(): String = if (berserk) "狂暴" else "普通"
+
+    fun backendShort(): String = when (backend) {
+        BACKEND_REMOTE -> "远程"
+        BACKEND_AUTO -> "自动"
+        else -> "本地"
+    }
 
     /**
      * Engine threads for [cores] logical processors. Normal keeps 2 cores free

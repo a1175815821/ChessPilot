@@ -23,6 +23,17 @@ object BridgePublisher {
     @Volatile var lastPonderMove: String? = null
     @Volatile var lastPonderFen: String? = null
     @Volatile var lastPonderAt: Long = 0
+    /**
+     * Prediction paint confirmation (self-healing repaint model): the one-shot
+     * needDraw gate used to be consumed on command arrival, so an arrow wiped
+     * by a board transition (or lost to a bridge drop) never came back while
+     * the overlay text ("预测xxxx") sat there claiming otherwise. Now a render
+     * repaints the pending prediction until a paint CONFIRMS (or the pair is
+     * superseded/cleared/expired) — throttled, so no invoke storms.
+     */
+    @Volatile var ponderConfirmedFen: String? = null
+    @Volatile var ponderConfirmedMove: String? = null
+    @Volatile var lastPonderAttemptAt: Long = 0
     @Volatile var autoPlayEnabled: Boolean = false
     @Volatile var lastAnalyzedFen: String? = null
 
@@ -47,11 +58,6 @@ object BridgePublisher {
         drawnMove = null
     }
 
-    /** True when the currently drawn arrow IS the ponder prediction (safe to clear it alone). */
-    @Synchronized
-    fun isPonderDrawn(): Boolean =
-        drawnFen != null && drawnFen == lastPonderFen && drawnMove == lastPonderMove
-
     /**
      * New game/lesson: drop the previous game's sticky state. Without this, the old
      * userColor inverts the new game (white opening skipped as "opponent's turn"),
@@ -67,6 +73,9 @@ object BridgePublisher {
         lastPonderMove = null
         lastPonderFen = null
         lastPonderAt = 0
+        ponderConfirmedFen = null
+        ponderConfirmedMove = null
+        lastPonderAttemptAt = 0
         clearDrawn()
         MainHook.log("new game: sticky state reset")
     }

@@ -50,9 +50,10 @@ object CommandLoop {
                     }
                 }
                 "clear" -> ensurePainter()?.clear()
-                // Ponder prediction (display-only red arrow): never autoplayed,
-                // never touches bestmove state. Staleness rides the same
-                // (fen,move) gate; any bestmove draw resets arrows first.
+                // Ponder prediction (display-only gray arrow): never autoplayed,
+                // never touches bestmove state. Self-healing repaints (not the
+                // one-shot needDraw gate) keep it on the board; any bestmove
+                // draw resets arrows first.
                 "ponder" -> {
                     val uci = cmd["move"] ?: return
                     val fen = cmd["fen"] ?: BridgePublisher.lastAnalyzedFen ?: return
@@ -61,10 +62,22 @@ object CommandLoop {
                     BridgePublisher.lastPonderAt = System.currentTimeMillis()
                     ensurePainter()?.drawPrediction(uci, fen)
                 }
-                // Drop the red prediction without touching the yellow best arrow
-                // (companion sends this when ponder goes quiet with no successor).
+                // Retire a CONFIRMED prediction without touching a board the
+                // bestmove already claims (its yellow draw wiped ours anyway).
+                // Always drops the pending pair so the self-healing repaints
+                // stop even when there was nothing visible to clear.
                 "clearponder" -> {
-                    if (BridgePublisher.isPonderDrawn()) ensurePainter()?.clear()
+                    val pf = BridgePublisher.lastPonderFen
+                    if (pf != null && BridgePublisher.ponderConfirmedFen == pf &&
+                        BridgePublisher.lastBestMoveFen != BridgePublisher.lastAnalyzedFen
+                    ) {
+                        ensurePainter()?.clear()
+                    }
+                    BridgePublisher.lastPonderMove = null
+                    BridgePublisher.lastPonderFen = null
+                    BridgePublisher.lastPonderAt = 0
+                    BridgePublisher.ponderConfirmedFen = null
+                    BridgePublisher.ponderConfirmedMove = null
                 }
                 // Kept for backward compat: remembered but no longer gates autoplay.
                 "config" -> BridgePublisher.autoPlayEnabled = cmd["autoplay"] == "1"

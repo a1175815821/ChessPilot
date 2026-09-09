@@ -1,5 +1,6 @@
 package com.chessassist
 
+import android.animation.ObjectAnimator
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -15,9 +16,12 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.chessassist.engine.ChessMath
 import com.chessassist.engine.EngineLoop
+import com.chessassist.ui.Ui
 
 /**
  * Companion-side overlay: persistent dark status banner (top center by default).
+ * 设计系统 v1.0 视觉（见 docs/design/DESIGN_SYSTEM.md §4.8）：92% 不透明深底、
+ * 20dp 圆角、hairline 描边、金色 spinner、全圆角 pill 走棋按钮、入场动画。
  *
  * Layout (horizontal): [mode badge? | spinner | title+winrate column | play button].
  * Berserk mode adds a red border + 狂暴 badge; an active REMOTE backend adds a
@@ -50,11 +54,14 @@ object OverlayManager {
     private var spinner: SpinView? = null
     private var modeBadge: TextView? = null
     private var bgDrawable: GradientDrawable? = null
+    private var playBgOn: GradientDrawable? = null
+    private var playBgOff: GradientDrawable? = null
     private var added = false
     @Volatile private var initScheduled = false
 
     private val BERSERK_RED = Color.parseColor("#FF5722")
     private val REMOTE_GREEN = Color.parseColor("#00E676")
+    private val BG_COLOR = Color.parseColor("#EB141A22")
 
     /**
      * Mode livery: remote backend gets a green border + 算力 badge, berserk a
@@ -72,11 +79,13 @@ object OverlayManager {
             when {
                 remote -> {
                     badge.text = "算力"
+                    badge.setTextColor(Color.parseColor("#04331D"))
                     (badge.background as? GradientDrawable)?.setColor(REMOTE_GREEN)
                     badge.visibility = View.VISIBLE
                 }
                 b -> {
                     badge.text = "狂暴"
+                    badge.setTextColor(Color.WHITE)
                     (badge.background as? GradientDrawable)?.setColor(BERSERK_RED)
                     badge.visibility = View.VISIBLE
                 }
@@ -89,7 +98,7 @@ object OverlayManager {
         when {
             remote -> bg.setStroke((2 * density).toInt(), REMOTE_GREEN)
             b -> bg.setStroke((2 * density).toInt(), BERSERK_RED)
-            else -> bg.setStroke(0, Color.TRANSPARENT)
+            else -> bg.setStroke((1 * density).toInt().coerceAtLeast(1), Ui.LINE)
         }
     }
 
@@ -116,14 +125,14 @@ object OverlayManager {
 
                 titleTv = TextView(appContext).apply {
                     text = "ChessPilot"
-                    setTextColor(Color.WHITE)
-                    textSize = 17f
+                    setTextColor(Ui.T1)
+                    textSize = 16f
                     paint.isFakeBoldText = true
                 }
                 detailTv = TextView(appContext).apply {
                     text = "等待对局…"
-                    setTextColor(Color.parseColor("#BDBDBD"))
-                    textSize = 14f
+                    setTextColor(defaultDetailColor)
+                    textSize = 13f
                 }
                 val textCol = LinearLayout(appContext).apply {
                     orientation = LinearLayout.VERTICAL
@@ -138,37 +147,51 @@ object OverlayManager {
                 spinner = SpinView(appContext).apply {
                     visibility = View.GONE
                 }
+                // Pill play button: gold when tappable ("走棋"), grey pill when
+                // disabled ("自动"/no move). Text contract untouched.
+                playBgOn = GradientDrawable().apply {
+                    setColor(Ui.GOLD)
+                    cornerRadius = dp(18).toFloat()
+                }
+                playBgOff = GradientDrawable().apply {
+                    setColor(Ui.TRACK)
+                    cornerRadius = dp(18).toFloat()
+                }
                 playBtn = Button(appContext).apply {
                     text = "走棋"
-                    textSize = 14f
+                    textSize = 13f
+                    minHeight = 0
+                    minimumHeight = 0
+                    setPadding(dp(16), dp(6), dp(16), dp(6))
                     isEnabled = false
                     setOnClickListener { onPlay?.invoke() }
                 }
                 modeBadge = TextView(appContext).apply {
                     text = "狂暴"
                     setTextColor(Color.WHITE)
-                    textSize = 12f
+                    textSize = 11f
                     paint.isFakeBoldText = true
                     background = GradientDrawable().apply {
                         setColor(BERSERK_RED)
-                        cornerRadius = dp(8).toFloat()
+                        cornerRadius = dp(6).toFloat()
                     }
-                    setPadding(dp(6), dp(2), dp(6), dp(2))
+                    setPadding(dp(7), dp(2), dp(7), dp(2))
                     visibility = View.GONE
                 }
                 root = LinearLayout(appContext).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     background = GradientDrawable().apply {
-                        setColor(Color.parseColor("#CC1E1E1E"))
-                        cornerRadius = dp(16).toFloat()
+                        setColor(BG_COLOR)
+                        cornerRadius = dp(20).toFloat()
+                        setStroke(dp(1).coerceAtLeast(1), Ui.LINE)
                     }.also { bgDrawable = it }
                     setPadding(dp(12), dp(10), dp(12), dp(10))
                     addView(modeBadge, LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
                     ).apply { marginEnd = dp(8) })
-                    addView(spinner, LinearLayout.LayoutParams(dp(24), dp(24)).apply {
+                    addView(spinner, LinearLayout.LayoutParams(dp(20), dp(20)).apply {
                         marginEnd = dp(8)
                     })
                     addView(textCol, LinearLayout.LayoutParams(
@@ -178,7 +201,7 @@ object OverlayManager {
                     addView(playBtn, LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { marginStart = dp(8) })
+                    ).apply { marginStart = dp(10) })
                     // Touch listener attached after lp exists (see below).
                 }
 
@@ -215,6 +238,13 @@ object OverlayManager {
                 wm?.addView(root, lp)
                 added = true
                 applyModeStyle()
+                setPlayButton(false, playBtn?.text?.toString() ?: "走棋")
+                // 入场动画：fade + 上移回位 180ms（设计规范 §5）
+                root?.let { r ->
+                    r.alpha = 0f
+                    r.translationY = -dp(8).toFloat()
+                    r.animate().alpha(1f).translationY(0f).setDuration(180).start()
+                }
             } catch (_: Throwable) {
                 // overlay permission missing — allow a later retry (e.g. after the
                 // user grants it and returns to MainActivity, which calls init again).
@@ -294,7 +324,7 @@ object OverlayManager {
         }
     }
 
-    private val defaultDetailColor = Color.parseColor("#BDBDBD")
+    private val defaultDetailColor = Ui.T2
 
     /** Core writer: persistent two-line banner. */
     fun showStatus(title: String, detail: String = "") {
@@ -376,14 +406,19 @@ object OverlayManager {
     }
 
     private fun setPlayButton(enabled: Boolean, text: String) {
-        playBtn?.isEnabled = enabled
-        playBtn?.text = text
+        playBtn?.let { btn ->
+            btn.isEnabled = enabled
+            btn.text = text
+            btn.paint.isFakeBoldText = enabled
+            btn.setTextColor(if (enabled) Ui.ON_GOLD else Ui.T3)
+            btn.background = if (enabled) playBgOn else playBgOff
+        }
     }
 
-    /** Fixed-size arc spinner: 270° round-capped arc rotating at 1 rev/s. */
+    /** Fixed-size arc spinner: 270° round-capped arc rotating at 1 rev/s, brand gold. */
     private class SpinView(context: Context) : View(context) {
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = Ui.GOLD
             style = android.graphics.Paint.Style.STROKE
             strokeCap = android.graphics.Paint.Cap.ROUND
         }
@@ -417,9 +452,9 @@ object OverlayManager {
         spinAnim = null
         if (spinning) {
             v.visibility = View.VISIBLE
-            spinAnim = android.animation.ObjectAnimator.ofFloat(v, "sweep", 0f, 360f).apply {
+            spinAnim = ObjectAnimator.ofFloat(v, "sweep", 0f, 360f).apply {
                 duration = 1000L
-                repeatCount = android.animation.ObjectAnimator.INFINITE
+                repeatCount = ObjectAnimator.INFINITE
                 interpolator = android.view.animation.LinearInterpolator()
                 start()
             }
@@ -443,6 +478,8 @@ object OverlayManager {
             spinner = null
             modeBadge = null
             bgDrawable = null
+            playBgOn = null
+            playBgOff = null
             added = false
             initScheduled = false
         }

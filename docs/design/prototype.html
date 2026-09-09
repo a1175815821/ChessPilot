@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="XwOgTLPSZYnGKXJqG7f8BX">
+<head data-page-node-id="G4B886p5YcV5xteb7f85gR">
+<meta charset="UTF-8" data-page-node-id="hok7LciCs9C9JN9uReoW7t">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="LAY8szVxl03he8Lm5QBCjf">
+<title>ChessPilot 设计系统 v1.0 · 高保真原型</title>
+<style>
+  /* ============ 设计令牌（与 UiKit.kt 一一对应） ============ */
+  :root{
+    --bg-base:#0B0F14; --bg-surface:#131922; --bg-elevated:#1B2431; --bg-inset:#0A0E13;
+    --line:#14FFFFFF; --line-strong:#26FFFFFF;
+    --t1:#F2F5F9; --t2:#A6B0BE; --t3:#6B7686;
+    --gold:#F5B942; --gold-pressed:#D9A231; --on-gold:#1A1305; --gold-dim:#29F5B942;
+    --win:#69F0AE; --mid:#FFD740; --lose:#FF8A65;
+    --berserk:#FF5722; --remote:#00E676;
+    --danger:#FF5252; --danger-dim:#26FF5252;
+    --r-card:16px; --r-ctl:12px; --r-chip:8px; --r-banner:20px;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"Roboto Mono",monospace;
+    --sans:-apple-system,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#070A0E;color:var(--t1);font-family:var(--sans);line-height:1.55;
+       -webkit-font-smoothing:antialiased}
+  code,.mono{font-family:var(--mono)}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 28px 80px}
+
+  /* ============ 页面骨架 ============ */
+  header.hero{padding:36px 0 8px}
+  header.hero .kick{color:var(--gold);font-size:13px;font-weight:700;letter-spacing:.18em}
+  header.hero h1{font-size:34px;letter-spacing:.5px;margin:6px 0 8px}
+  header.hero p{color:var(--t2);max-width:760px;font-size:14px}
+  nav.toc{display:flex;gap:10px;flex-wrap:wrap;margin:22px 0 8px}
+  nav.toc a{color:var(--t2);text-decoration:none;font-size:13px;padding:7px 14px;
+    border:1px solid var(--line-strong);border-radius:999px;transition:.15s}
+  nav.toc a:hover{color:var(--gold);border-color:var(--gold)}
+  section{margin-top:56px}
+  h2{font-size:22px;margin-bottom:6px;display:flex;align-items:center;gap:10px}
+  h2::before{content:"";width:8px;height:22px;border-radius:4px;background:var(--gold)}
+  .sub{color:var(--t2);font-size:13px;margin-bottom:20px;max-width:820px}
+
+  /* ============ 令牌展示 ============ */
+  .grid{display:grid;gap:12px}
+  .swatches{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  .sw{border:1px solid var(--line);border-radius:var(--r-ctl);overflow:hidden;background:var(--bg-surface)}
+  .sw .c{height:56px}
+  .sw .n{padding:8px 10px 10px}
+  .sw .n b{display:block;font-size:12px}
+  .sw .n span{font-size:11px;color:var(--t3);font-family:var(--mono)}
+  .typescale div{display:flex;align-items:baseline;gap:14px;padding:9px 0;border-bottom:1px dashed var(--line)}
+  .typescale small{width:150px;color:var(--t3);font-family:var(--mono);font-size:11px;flex:none}
+  .tokens-note{font-size:12px;color:var(--t3);margin-top:10px}
+
+  /* ============ 手机框 ============ */
+  .stage{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+  .phone{width:375px;flex:none;border-radius:44px;padding:12px;
+    background:linear-gradient(160deg,#2A3140,#10141B);
+    box-shadow:0 30px 80px #000000CC, inset 0 1px 1px #FFFFFF22}
+  .screen{background:var(--bg-base);border-radius:34px;overflow:hidden;height:760px;
+    display:flex;flex-direction:column;position:relative}
+  .notch{height:26px;display:flex;align-items:center;justify-content:center;flex:none}
+  .notch::after{content:"";width:110px;height:8px;border-radius:4px;background:#000}
+  .scroll{overflow-y:auto;padding:6px 16px 26px;flex:1;scrollbar-width:thin;scrollbar-color:#2A3342 transparent}
+  .scroll::-webkit-scrollbar{width:4px}
+  .scroll::-webkit-scrollbar-thumb{background:#2A3342;border-radius:2px}
+
+  /* ============ App 组件（与 Kotlin 实现一致） ============ */
+  .apphead{display:flex;align-items:center;gap:12px;padding:10px 2px 14px}
+  .logo{width:40px;height:40px;border-radius:12px;background:var(--gold);color:var(--on-gold);
+    display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:900;flex:none}
+  .apphead .tt b{font-size:20px;display:block;line-height:1.15}
+  .apphead .tt span{font-size:12px;color:var(--t3)}
+  .verchip{margin-left:auto;font-size:11px;font-family:var(--mono);color:var(--gold);
+    background:var(--gold-dim);padding:3px 8px;border-radius:8px}
+
+  .card{background:var(--bg-surface);border:1px solid var(--line);border-radius:var(--r-card);
+    padding:16px;margin-bottom:12px}
+  .card+.card{margin-top:0}
+
+  .staterow{display:flex;align-items:center;gap:8px}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .dot.pulse{animation:pulse 1s ease-in-out infinite alternate}
+  @keyframes pulse{from{opacity:1}to{opacity:.35}}
+  .statelabel{font-size:17px;font-weight:700}
+  .modebadge{font-size:11px;font-weight:700;color:#fff;border-radius:6px;padding:2px 7px;margin-left:auto}
+  .modebadge.berserk{background:var(--berserk)}
+  .modebadge.remote{background:var(--remote);color:#043}
+
+  .heromid{display:flex;gap:14px;margin-top:12px;align-items:flex-start}
+  .heromid .l{flex:1;min-width:0}
+  .cap{font-size:12px;color:var(--t3)}
+  .bestmove{font-family:var(--mono);font-size:30px;font-weight:800;letter-spacing:1px;line-height:1.2;margin:2px 0 4px}
+  .winline{font-size:15px;font-weight:700}
+  .winbar{height:5px;border-radius:3px;background:#2A3342;margin-top:8px;overflow:hidden}
+  .winbar i{display:block;height:100%;border-radius:3px;transition:width .3s}
+  .bestsub{font-size:11px;color:var(--t3);font-family:var(--mono);margin-top:7px}
+  .fenboard{width:112px;height:112px;border-radius:10px;border:1px solid var(--line-strong);
+    overflow:hidden;flex:none;position:relative;display:grid;
+    grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}
+  .fenboard i{display:flex;align-items:center;justify-content:center;font-style:normal;
+    font-size:10px;line-height:1}
+  .fenboard .stm{position:absolute;right:3px;bottom:3px;width:6px;height:6px;border-radius:50%}
+
+  .kv{display:flex;gap:12px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px;align-items:baseline}
+  .kv:last-child{border-bottom:none;padding-bottom:0}
+  .kv .k{width:86px;flex:none;color:var(--t3);font-size:12px}
+  .kv .v{color:var(--t2);min-width:0;word-break:break-all}
+  .kv .v.ellip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kv .v.ok{color:var(--win)} .kv .v.warn{color:var(--mid)} .kv .v.bad{color:var(--lose)}
+  .kv.err{background:var(--danger-dim);border-radius:8px;padding:7px 9px;border-bottom:none;margin-top:6px}
+  .kv.err .v{color:var(--danger)}
+
+  .btn{display:flex;align-items:center;justify-content:center;gap:8px;height:48px;border-radius:var(--r-ctl);
+    font-size:14px;font-weight:700;border:none;cursor:pointer;transition:.12s;user-select:none;width:100%}
+  .btn:active{transform:scale(.98);opacity:.85}
+  .btn.primary{background:var(--gold);color:var(--on-gold)}
+  .btn.primary:hover{background:var(--gold-pressed)}
+  .btn.danger-o{background:transparent;color:var(--danger);border:1.5px solid var(--danger)}
+  .btn.secondary{background:var(--bg-elevated);color:var(--t1);border:1px solid var(--line-strong);
+    height:44px;font-weight:600}
+  .btnrow{display:flex;gap:10px;margin-top:10px}
+  .actions{margin-bottom:20px}
+
+  .secthead{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+  .secthead b{font-size:15px}
+  .secthead .preview{margin-left:auto;font-size:11px;color:var(--t3);max-width:55%;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono)}
+  .chev{color:var(--t3);font-size:12px;transition:transform .2s;margin-left:6px;flex:none}
+  .sect.closed .chev{transform:rotate(-90deg)}
+  .sectbody{overflow:hidden;max-height:1200px;transition:max-height .25s ease}
+  .sect.closed .sectbody{max-height:0 !important}
+
+  .switchrow{display:flex;align-items:center;gap:12px;padding:10px 0;cursor:pointer;min-height:44px}
+  .switchrow+.switchrow{border-top:1px dashed var(--line)}
+  .switchrow .tx{flex:1}
+  .switchrow .tx b{font-size:14px;display:block}
+  .switchrow .tx span{font-size:12px;color:var(--t3)}
+  .switchrow.on-risk .tx span{color:var(--mid)}
+  .sw2{width:46px;height:27px;border-radius:14px;background:#2A3342;position:relative;flex:none;transition:.18s}
+  .sw2::after{content:"";position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;
+    background:var(--t3);transition:.18s}
+  .sw2.on{background:var(--gold-dim);box-shadow:inset 0 0 0 1px var(--gold)}
+  .sw2.on::after{left:22px;background:var(--gold)}
+
+  .sliderrow{padding:10px 0}
+  .sliderrow+.sliderrow{border-top:1px dashed var(--line)}
+  .sliderrow .lh{display:flex;align-items:center;font-size:14px;margin-bottom:9px}
+  .valchip{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--gold);
+    background:var(--gold-dim);border-radius:8px;padding:3px 9px}
+  input[type=range]{-webkit-appearance:none;width:100%;height:5px;border-radius:3px;
+    background:linear-gradient(to right,var(--gold) var(--p,50%),#2A3342 var(--p,50%));outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:19px;height:19px;border-radius:50%;
+    background:var(--gold);border:3px solid #0B0F14;box-shadow:0 0 0 1px var(--gold);cursor:pointer}
+  .sliderrow.disabled{opacity:.4;pointer-events:none}
+
+  .seg{display:flex;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r-ctl);
+    padding:3px;height:42px;margin-top:6px}
+  .seg div{flex:1;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--t2);
+    border-radius:9px;cursor:pointer;transition:.15s}
+  .seg div.on{background:var(--gold);color:var(--on-gold);font-weight:700}
+  .inputrow{display:flex;gap:10px;margin-top:12px}
+  .inp{flex:1;background:var(--bg-inset);border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+    height:42px;padding:0 12px;color:var(--t1);font-size:13px;font-family:var(--mono);outline:none}
+  .inp:focus{border-color:var(--gold)}
+  .inp::placeholder{color:var(--t3);font-family:var(--sans)}
+
+  .term{background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r-ctl);
+    padding:11px 12px;height:200px;overflow-y:auto;font-family:var(--mono);font-size:11.5px;
+    color:var(--t2);line-height:1.6;margin-top:12px;scrollbar-width:thin;scrollbar-color:#2A3342 transparent}
+  .term b{color:var(--gold);font-weight:400}
+
+  .foot{font-size:11px;color:var(--t3);text-align:center;padding:16px 12px 6px;line-height:1.7}
+
+  /* ============ 悬浮窗 ============ */
+  .bannerzone{background:
+      repeating-conic-gradient(#141B26 0% 25%, #0E141D 0% 50%) 0 0/34px 34px;
+      border:1px solid var(--line);border-radius:var(--r-card);padding:26px}
+  .banner{display:inline-flex;align-items:center;gap:9px;background:#EB141A22;
+    border:1px solid var(--line-strong);border-radius:var(--r-banner);padding:10px 12px;
+    box-shadow:0 10px 28px #00000090;max-width:100%}
+  .banner.berserk{border:2px solid var(--berserk)}
+  .banner.remote{border:2px solid var(--remote)}
+  .banner .bbadge{font-size:11px;font-weight:700;color:#fff;border-radius:6px;padding:2px 7px;flex:none}
+  .banner .bbadge.berserk{background:var(--berserk)}
+  .banner .bbadge.remote{background:var(--remote);color:#043}
+  .spin{width:20px;height:20px;flex:none;animation:rot 1s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .banner .tx b{display:block;font-size:15.5px;white-space:nowrap}
+  .banner .tx span{display:block;font-size:12.5px;color:var(--t2);white-space:nowrap;font-family:var(--mono)}
+  .banner .tx span.g{color:var(--win)} .banner .tx span.y{color:var(--mid)} .banner .tx span.r{color:var(--lose)}
+  .play{flex:none;height:36px;padding:0 16px;border-radius:999px;border:none;font-size:13px;font-weight:700;
+    background:var(--gold);color:var(--on-gold);cursor:pointer;transition:.12s}
+  .play:active{transform:scale(.95)}
+  .play:disabled{background:#2A3342;color:var(--t3);cursor:default}
+  .bstate{margin-bottom:22px}
+  .bstate .lbl{font-size:11px;color:var(--t3);font-family:var(--mono);margin-bottom:7px}
+  .bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:18px 26px}
+
+  /* ============ 控件陈列 ============ */
+  .spec{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+  .spec .box{background:var(--bg-surface);border:1px solid var(--line);border-radius:var(--r-card);padding:18px}
+  .spec .box h4{font-size:13px;color:var(--t2);margin-bottom:14px;font-weight:600}
+  .spec .row{display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+
+  .presetbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+  .presetbar button{background:var(--bg-elevated);border:1px solid var(--line-strong);color:var(--t2);
+    border-radius:999px;padding:7px 15px;font-size:12.5px;cursor:pointer;transition:.15s}
+  .presetbar button.on{background:var(--gold);border-color:var(--gold);color:var(--on-gold);font-weight:700}
+
+  .wideframe{width:100%;max-width:760px;border:1px solid var(--line-strong);border-radius:18px;
+    background:var(--bg-base);padding:14px;overflow:hidden}
+  .wideinner{max-width:560px;margin:0 auto}
+  .capline{font-size:11.5px;color:var(--t3);margin-top:10px;text-align:center}
+  @media(max-width:820px){.stage{flex-direction:column}}
+</style>
+</head>
+<body data-page-node-id="7YgWRsA3DlIhpG1RArbnOr">
+<div class="wrap" data-page-node-id="4wgEBm4yL2zOIuhgvQSzzM">
+
+<header class="hero" data-page-node-id="mfOi8FjiO27PZ5pU7olJ3O">
+  <div class="kick" data-page-node-id="cj5FEvYSLauDN7OeIwhU1U">CHESSPILOT · DESIGN SYSTEM v1.0</div>
+  <h1 data-page-node-id="FMc0m8nRcFATVWyBHA6Fde">多邻国国际象棋助手 · 前端重设计</h1>
+  <p data-page-node-id="IH39hdOk6qbiUtKcMR0iLN">深色优先 · 金色品牌色取自棋盘推荐箭头 · 胜率绿黄红与狂暴红/远程绿为既有语义契约。
+     主界面重排为「对局雷达 → 连接状态 → 快捷操作 → 三级设置 → 事件日志」的信息层级，
+     悬浮窗横幅全状态重绘。下方原型全部可交互。</p>
+  <nav class="toc" data-page-node-id="Y0a86iMCrxwdJuXDmfFaS5">
+    <a href="#tokens" data-page-node-id="vdP7Al4iaFHGAPCWEaoMCH">① 设计令牌</a><a href="#main" data-page-node-id="GcQLarkUr5UO2m3mERSuwg">② 主界面原型</a>
+    <a href="#banner" data-page-node-id="wnfsY365IVhEvnaU2YHAHp">③ 悬浮窗横幅</a><a href="#wide" data-page-node-id="b4bL4jYoHDFFYtbdPffFrK">④ 宽屏适配</a><a href="#components" data-page-node-id="9uY3LEdvPWwvO4xuyLSxGw">⑤ 组件规范</a>
+  </nav>
+</header>
+
+<!-- ================= ① 设计令牌 ================= -->
+<section id="tokens" data-page-node-id="8if9VEFzHCJb3uHfeUDLSd">
+  <h2 data-page-node-id="EZm7XKAnaXr8Sf6L1W3A31">设计令牌</h2>
+  <p class="sub" data-page-node-id="fHXvNp9nyzfeTmtzXCV6FG">中性层搭骨架，金色做品牌，语义色只出现在该出现的地方（取值即 Kotlin 常量，可直接落地）。</p>
+
+  <h4 style="font-size:14px;margin:18px 0 10px" data-page-node-id="YwFtrvD1D8AfmdrHybjCYx">中性层与品牌色</h4>
+  <div class="grid swatches" id="sw1" data-page-node-id="AI71H38BQtEePHiik2THF5"></div>
+  <h4 style="font-size:14px;margin:22px 0 10px" data-page-node-id="1oaQJPAt6sUGPWxtEjWArA">语义色（契约，唯一出处 <code data-page-node-id="XhpZC940yiEFYhZLnoioTe">ChessMath</code> / <code data-page-node-id="ODLwQuUGCfIBSdLu1zOitM">OverlayManager</code>）</h4>
+  <div class="grid swatches" id="sw2" data-page-node-id="nVTjO6wQSUkEVp7haKlT6R"></div>
+
+  <h4 style="font-size:14px;margin:26px 0 10px" data-page-node-id="0Qc6U13vsGknrIGVo60ILC">字体梯度（sp）</h4>
+  <div class="typescale" data-page-node-id="HiOMlH6HBwGAcQIi0iOgVb">
+    <div data-page-node-id="K9kxyC2KIZidEnfzHwHgMI"><small data-page-node-id="eBXLgJTg6tO5MhtgPhI5wH">Display 30 Bold Mono</small><span class="mono" style="font-size:30px;font-weight:800" data-page-node-id="X0rurMLcakGvAo5KcHhwxu">e2e4</span></div>
+    <div data-page-node-id="pGG1RZUthDoY9CoBWo3mhM"><small data-page-node-id="btmX3wdlaQBWTAQhnjMK6n">Title 20 Bold</small><span style="font-size:20px;font-weight:700" data-page-node-id="Xh5yzT5jFKFecBntcBIBSo">ChessPilot 对局雷达</span></div>
+    <div data-page-node-id="MoVbA9M3xHcXAhc4nHxGMb"><small data-page-node-id="aj4f614I69iMrw1JaFhbrC">Section 15 Bold</small><span style="font-size:15px;font-weight:700" data-page-node-id="ff2Yk6G8ESppnwp2DYYKBz">功能设置</span></div>
+    <div data-page-node-id="FyPd74VGrTnO7IH0REI0z7"><small data-page-node-id="tki9SLLxHt1wY7zmYFfqXk">Body 14</small><span style="font-size:14px" data-page-node-id="GRt2AOOGU2HFsfdsULlrv5">思考时间 700ms，引擎运行中</span></div>
+    <div data-page-node-id="JBTipBcwzvUsCH6EdiGUvp"><small data-page-node-id="1ZNCf0t15tAA0oOE7AWyQO">Caption 12</small><span style="font-size:12px;color:var(--t3)" data-page-node-id="75omVHnIUyDFYluWBKTOiZ">全自动模拟触摸下棋，谨慎使用</span></div>
+    <div data-page-node-id="m46RiAeVfMBxaYyUfz157Z"><small data-page-node-id="77dt9nA5t8m1azu0y1IjuC">Micro 11</small><span style="font-size:11px;color:var(--t3)" data-page-node-id="5Gx0pB8nwSlyMZmwqGRfum">狂暴 · 算力 · v0.3</span></div>
+  </div>
+
+  <h4 style="font-size:14px;margin:26px 0 10px" data-page-node-id="mXWO2R4wB0Wmjt7bQB6WAH">间距 · 圆角 · 动效</h4>
+  <div class="spec" data-page-node-id="6NVGaUBGAvvDVEl5NPN36A">
+    <div class="box" data-page-node-id="Ifigg3iHu47JkCirQNmB0S"><h4 data-page-node-id="UiLShNidfhCMnHsxhqRLNS">间距阶梯（4dp 网格）</h4>
+      <div class="row" id="spaces" data-page-node-id="5QLzW9WFLkVaVR6iHExkHw"></div>
+      <div class="tokens-note" data-page-node-id="TgbEoRkqn6qIjdf8epSrOd">页面边距 16 · 卡内边距 16 · 卡间距 12 · 组间距 20 · 触控 ≥44</div></div>
+    <div class="box" data-page-node-id="umMozxCTRfarEqXhgcfA1j"><h4 data-page-node-id="cACA1OQxfvrRJrm5eRQoW7">圆角</h4>
+      <div class="row" id="radii" data-page-node-id="KA36fiGjMBl3NvtobUKoW4"></div>
+      <div class="tokens-note" data-page-node-id="wIUJwuT5LPLKtcVGQcVzA4">卡片16 · 控件12 · chip 8 · 悬浮窗20 · 徽标6</div></div>
+    <div class="box" data-page-node-id="Ykq6Y0boAFtIV1coTsh3nz"><h4 data-page-node-id="y3vT78zwYM90rj9yzo8QUz">动效（≤250ms，无语义不循环）</h4>
+      <div class="tokens-note" style="font-size:13px;color:var(--t2);line-height:2" data-page-node-id="Q2Q68e25DXkS9onFWuB5wi">
+        展开/折叠 LayoutTransition 200ms + chevron ±90°<br data-page-node-id="TKDB7YpCbOqvAKpV2uexme">
+        按压 alpha .85 + scale .98 / 100ms<br data-page-node-id="gZgCQsd6iKARHwKM0barmv">
+        状态点脉冲 1s 呼吸（仅启动中/计算中）<br data-page-node-id="ZOwC1eI0kzcTZCQoqUBfA8">
+        悬浮窗入场 fade + ↑8dp / 180ms ease-out</div></div>
+  </div>
+</section>
+
+<!-- ================= ② 主界面原型 ================= -->
+<section id="main" data-page-node-id="QwgSNNGSjzzTRMtQ4MUMAc">
+  <h2 data-page-node-id="iZgZQ8R9Yo4sCqxb9lvdWE">主界面 · 对局雷达</h2>
+  <p class="sub" data-page-node-id="rfgPV9MU5iFEqBRqnrKP1y">第一眼回答三件事：引擎活没活、推荐走哪步、我胜率多少。诊断信息收进第二张卡。
+     点击预设状态切换；分组卡头、开关、滑杆、分段控件均可交互。</p>
+
+  <div class="presetbar" id="presets" data-page-node-id="lhZSiCPQyTIDLzT3GpH43A"></div>
+
+  <div class="stage" data-page-node-id="wTzsc9zE37KqCHLFgTbNfM">
+    <div class="phone" data-page-node-id="w1LFSxTFCdJ0DK2HaSKaD3"><div class="screen" data-page-node-id="bhbxG306EbBVQc6l5fJ4V0">
+      <div class="notch" data-page-node-id="KGpwOVxntpkEciFVCPppWN"></div>
+      <div class="scroll" id="screen1" data-page-node-id="oRFLDc3E27fqREIjtDFQjv">
+
+        <div class="apphead" data-page-node-id="6HBwOp0UUft4JkJoPBNwJq">
+          <div class="logo" data-page-node-id="Ra3C2bJP5hsWrfAEmD1tks">♞</div>
+          <div class="tt" data-page-node-id="KBnshJJ92V0L7UZy2pwd4f"><b data-page-node-id="Necf2HsXHJvwqLDvkw4YVT">ChessPilot</b><span data-page-node-id="Q1vTBl7djdOCJlNFkOlMb4">多邻国国际象棋助手</span></div>
+          <div class="verchip" data-page-node-id="Kl4VdX4nmsUF7vThv7DZro">v0.3</div>
+        </div>
+
+        <!-- 对局雷达卡 -->
+        <div class="card" data-page-node-id="OdUQ8xQJNfV17a2t6X6dEa">
+          <div class="staterow" data-page-node-id="OCMlpARD9sN8PDvg6j3CDg">
+            <div class="dot" id="p-dot" data-page-node-id="izPLDX5R0pMDWZW9eyJ98v"></div>
+            <div class="statelabel" id="p-state" data-page-node-id="cPimPZ5ziFdMuRXhfrG3CU">运行中</div>
+            <div class="modebadge" id="p-badge" style="display:none" data-page-node-id="irj9VrxyhH52MLHhCfeTet"></div>
+          </div>
+          <div class="heromid" data-page-node-id="fW3CESNDXzICbEgFmBpPYu">
+            <div class="l" data-page-node-id="nlpMbafaPZwhPzJKtCSBu0">
+              <div class="cap" id="p-movecap" data-page-node-id="EIOSNEFgZ0wu0lKKoiRVA1">最佳招法</div>
+              <div class="bestmove" id="p-move" data-page-node-id="c9E9VTjVFNS41WqNtaz4ka">e2e4</div>
+              <div class="winline" id="p-win" data-page-node-id="GNYG9N2eQ8UkB2PoDekcLq">我方胜率 62%</div>
+              <div class="winbar" data-page-node-id="6Gwl85XOOXG79RGY33yIGe"><i id="p-winbar" data-page-node-id="I7y3oorMa8tFBc7H6r3JQU"></i></div>
+              <div class="bestsub" id="p-sub" data-page-node-id="zlwdyCG7dN7T9invG9h4A5">深度22 · 1 秒前</div>
+            </div>
+            <div class="fenboard" id="p-board" data-page-node-id="livCmYAeuDfsuSl5bZNPPB"></div>
+          </div>
+        </div>
+
+        <!-- 连接与引擎状态 -->
+        <div class="card" style="padding-top:12px;padding-bottom:12px" data-page-node-id="29BQ0AOkr16wRivqEt97Vs">
+          <div id="p-kv" data-page-node-id="UiS4szhLldeCIOfB5u7M13"></div>
+        </div>
+
+        <!-- 快捷操作 -->
+        <div class="actions" data-page-node-id="reBv0fOTunxGnLkrrPu4jZ">
+          <button class="btn danger-o" id="p-toggle" data-page-node-id="JADdA4uk3QKv5821l2cfCN">停止引擎服务</button>
+          <div class="btnrow" data-page-node-id="CjFPVFcoiAGjLbIXAYRgdy">
+            <button class="btn secondary" data-page-node-id="gpOQNGpS8ASE2rpysg0S3I">打开多邻国</button>
+            <button class="btn secondary" data-page-node-id="QMdyqyoxH81j7b0GrJwNL3">悬浮窗授权</button>
+          </div>
+        </div>
+
+        <!-- 功能设置 -->
+        <div class="card sect" data-sect data-page-node-id="YSbgEgNjcBL25tkOcaYgje">
+          <div class="secthead" data-head data-page-node-id="WZIpoEmldXb5FvK4QOcdTI"><b data-page-node-id="BBdyaULlRSmEEzYx0Fm1Y4">功能设置</b><span class="chev" data-page-node-id="KTqZS6rKiwanPFO1pgIICF">▾</span></div>
+          <div class="sectbody" data-page-node-id="9lxs3KHkNg0e7lglMHfTqr">
+            <div class="switchrow" id="sw-auto" data-page-node-id="uCq04BmCNvk1FAblDTV9k7"><div class="tx" data-page-node-id="X0r6FV9S0fXuOt2XrZAQUB"><b data-page-node-id="cKxIvzZLrd7gZjazLlUXYH">自动走棋</b><span data-page-node-id="vZP2LBwFOHV0knAVHo3Ock">全自动模拟触摸下棋，谨慎使用（ToS 风险）</span></div><div class="sw2" data-page-node-id="zvXiPHibWiLWicUwGGzZ6H"></div></div>
+            <div class="switchrow" id="sw-berserk" data-page-node-id="LYNFYKWRNHVCUfgR2L6uY3"><div class="tx" data-page-node-id="y9qEgqWGlchHVnsTMh2NtF"><b data-page-node-id="AB5RnHD9EUrOpmXrSyhCeb">狂暴模式</b><span data-page-node-id="QlgC4bInH2U2EOw28Zmxhi">极限资源配给强计算，功耗提高</span></div><div class="sw2" data-page-node-id="7mpdT0VAj2znjvVuKJb1V0"></div></div>
+            <div class="switchrow" id="sw-ponder" data-page-node-id="OSoQizR6nULhGtgLhVWR0A"><div class="tx" data-page-node-id="O8YGk61vL26Uc5C8WOnAHJ"><b data-page-node-id="vLW9UAwc7jCKhp5dgQBR2n">极限思考</b><span data-page-node-id="GyGxSaKXX85DkLDlkD2zfC">对手走棋时同步预测，功耗提高</span></div><div class="sw2" data-page-node-id="iLzGg9m3SDkIAFwUBRuhjz"></div></div>
+          </div>
+        </div>
+
+        <!-- 高级设置 -->
+        <div class="card sect closed" data-sect data-page-node-id="WZlJROxDog54oRpnwBllxf">
+          <div class="secthead" data-head data-page-node-id="qgOsUGeuWFproP4uP7RFuf"><b data-page-node-id="izFbgpk1ASiTRBSLDTsywU">高级设置</b><span class="preview" data-page-node-id="vVAVmZH5OGMhOxOqhLGw5Y">700ms · 深度关 · 本地</span><span class="chev" data-page-node-id="SwyPWAD2IF03d0jGioKGcr">▾</span></div>
+          <div class="sectbody" data-page-node-id="NScxXzVfdd37ZbzudgCYXl">
+            <div class="sliderrow" data-slider data-min="100" data-max="3000" data-step="100" data-val="700" data-unit="ms" data-page-node-id="QDvzTCTXNs9yEHnuC27d91"><div class="lh" data-page-node-id="pZmBml8gyqBPTbCybCQsyn">思考时间<span class="valchip" data-page-node-id="vISUQPeTKaNCfq4Zkgeuaf"></span></div><input type="range" data-page-node-id="uLHhwCnv4sHHe580miDoHq"></div>
+            <div class="sliderrow" data-slider data-min="0" data-max="30" data-step="1" data-val="0" data-fmt="depth" data-page-node-id="PbNnc5LqcggDH3aYM3dmUe"><div class="lh" data-page-node-id="ByqVOpAw47SrA97zoo3XxB">固定深度<span class="valchip" data-page-node-id="kmX0mLkGbww83Dg7XK5FUW"></span></div><input type="range" data-page-node-id="9t3i5Vb4jBCxPCai1FR99d"></div>
+            <div class="sliderrow" data-slider data-min="150" data-max="1500" data-step="50" data-val="450" data-unit="ms" data-page-node-id="v1B2YSM4dCLMF4Ak8E8M4O"><div class="lh" data-page-node-id="476Jepy6tcSkq8Ae81g4bU">走棋间隔<span class="valchip" data-page-node-id="kNDuK6TsSj3XYbU5sJGnqc"></span></div><input type="range" data-page-node-id="p9oHsmtozG5QC10KeJlYKn"></div>
+            <div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:12px;font-size:14px" data-page-node-id="aXvACUlCN3NI8IEDbce8fU">算力后端</div>
+            <div class="seg" id="seg" data-page-node-id="8JaGJQlVQ2P56QaWDuEOYf"><div class="on" data-page-node-id="5IYHjUtWMdFLOzK5SzvlFe">本地</div><div data-page-node-id="29fVwAso4LFwbpQqUBSEtb">自动</div><div data-page-node-id="SrcYI2q9U2gL6fHUq6pkdf">远程电脑</div></div>
+            <div class="inputrow" data-page-node-id="IfwKAv3orvt8JHfxQULYEv">
+              <input class="inp" placeholder="电脑IP，如 192.168.1.5" style="flex:1.6" data-page-node-id="Wk0gfuZIe6ZDXHyyjN1waz">
+              <input class="inp" placeholder="端口 41718" style="flex:1" data-page-node-id="0j4cZzrR4dNHiHJV82UFvW">
+            </div>
+            <div class="sliderrow" data-slider data-min="500" data-max="10000" data-step="500" data-val="3000" data-unit="ms" data-page-node-id="pfeBZbxHOdgmF26qEf1iXe"><div class="lh" data-page-node-id="DqLSVZZT4VpmT7f2qweHvP">远程思考时间<span class="valchip" data-page-node-id="TLVq0TaNih4x5uFbvE8jiw"></span></div><input type="range" data-page-node-id="nO2TloiFseIbdZPlLXCI4Q"></div>
+            <div class="sliderrow" data-slider data-min="0" data-max="40" data-step="1" data-val="0" data-fmt="depth" data-page-node-id="2UEygaiEgXRRHhzs2pjXPA"><div class="lh" data-page-node-id="KTmLduVMkHcEKi8LuwAmdy">远程固定深度<span class="valchip" data-page-node-id="WWvECcrU7OhgZ9si5yWoCF"></span></div><input type="range" data-page-node-id="96VIRdTVTn1E4aKIkMka9R"></div>
+            <button class="btn secondary" style="margin-top:10px" data-page-node-id="BtHTPXVXoM5amVylQ2E5Wq">测试远程连接</button>
+            <div class="cap" style="margin-top:10px" data-page-node-id="v8mTIMuTNCSewbpdUE9ICk">自动 = 远程优先，断线秒切本地，下局重连；远程两项发给电脑执行，上面三项只管本地引擎。</div>
+          </div>
+        </div>
+
+        <!-- 最近事件 -->
+        <div class="card sect closed" data-sect data-page-node-id="yAFDDHdFKDwD8f2ayEAM3J">
+          <div class="secthead" data-head data-page-node-id="IAtTwdCGbQRcUXCGqI8wjL"><b data-page-node-id="I6wjKMadNEbHW5gscwnJeW">最近事件</b><span class="preview" id="ev-preview" data-page-node-id="Td6DZpGA2zqfkiZJcW7ERP">12:03:41 最佳招法 e2e4</span><span class="chev" data-page-node-id="BQHnkCoFJyLLbZRZqhbQy8">▾</span></div>
+          <div class="sectbody" data-page-node-id="yKhzOomx3RVNNaRuCQFi2P"><div class="term" id="term" data-page-node-id="cI4up931FjlXMaofN2JsVK"></div></div>
+        </div>
+
+        <div class="foot" data-page-node-id="zVBKnwKokpvtO8vU9jfn3v">GPL-3.0 · 仅供研究<br data-page-node-id="sj77gvf6qqbxqbOXCZ9Rb4">修改多邻国行为违反其 ToS，请用小号折腾</div>
+      </div>
+    </div></div>
+
+    <div style="flex:1;min-width:300px" data-page-node-id="AcHGTqIG1wG1hW8Nmubd9E">
+      <div class="spec" style="grid-template-columns:1fr" data-page-node-id="xxEayXNiSnWD50RGA6BimY">
+        <div class="box" data-page-node-id="qOYCxFWvzmJ7657nqWDcVC"><h4 data-page-node-id="cHeJdQGixFVNruciqztwi5">信息层级（为什么这样排）</h4>
+          <div class="tokens-note" style="font-size:13px;color:var(--t2);line-height:2.0" data-page-node-id="NP75NVtdUklaplg07FS4sO">
+          ① <b style="color:var(--t1)" data-page-node-id="6096y2mWqjBoY1HlhnuCS8">对局雷达</b>——状态点 + 大招法 + 胜率条 + FEN 小棋盘，对局中只看它<br data-page-node-id="LAF6VGSMbmpTVESYpf5yeX">
+          ② <b style="color:var(--t1)" data-page-node-id="MsxDSotiAHlRtqTczztJYj">连接与引擎</b>——Hook/NNUE/后端/心跳等 8 行 KV，排障时展开读<br data-page-node-id="Fe5Wd8LGrp1AsfrqFwtDr5">
+          ③ <b style="color:var(--t1)" data-page-node-id="wnkHDuPQsV8BH30YdL3XAC">快捷操作</b>——启动/停止主按钮随状态换肤（金↔红描边）<br data-page-node-id="tNQnz87Hw5LSW8SUEe3j6Q">
+          ④ <b style="color:var(--t1)" data-page-node-id="smg0k7lr9DOK8ZF9mkAyAe">功能设置</b>——三个高频开关默认展开平铺<br data-page-node-id="rE2l8VfXb01FDBdqLUHFc0">
+          ⑤ <b style="color:var(--t1)" data-page-node-id="aRHCnHUiruerx9fdVfpPoH">高级设置</b>——滑杆/后端/远程参数折叠，卡头常驻摘要<br data-page-node-id="LjnbPvYwwP3oD0X38Loqm1">
+          ⑥ <b style="color:var(--t1)" data-page-node-id="LxwT34FGKLm54AaTTPSfJU">最近事件</b>——折叠时卡头滚动显示最后一条事件</div></div>
+        <div class="box" data-page-node-id="khMdjSJkeDDA6FxFd4cTAe"><h4 data-page-node-id="ORQwffTDWmpG5JA6tW8TD9">本次重设计解决的问题</h4>
+          <div class="tokens-note" style="font-size:13px;color:var(--t2);line-height:2.0" data-page-node-id="NeKcWiAvR9lxgxTOp1N8E0">
+          · 状态从一整块等宽灰字 → 分层卡片，招法/胜率一眼可读<br data-page-node-id="n3XAq0HBnj4pPvccYxu0KS">
+          · FEN 字符串 → 可视化小棋盘 + 行棋方指示点<br data-page-node-id="IoKuqFVvOFvKjjoANSisQh">
+          · 默认紫色系统控件 → 统一金色选中体系（开关/滑杆/分段）<br data-page-node-id="j5bTGb66QlzZEtOm8U7baw">
+          · 后端「禁用即选中」的按钮 hack → 标准分段控件<br data-page-node-id="lL91K0Gm6hk4R6H6Rgpozs">
+          · ▶/▼ 文本折叠 → 旋转 chevron + 200ms 高度动画<br data-page-node-id="TMFeAof2lCedQuPq0I8J8X">
+          · 悬浮窗默认按钮 → 全圆角 pill，禁用态有独立灰阶样式</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ③ 悬浮窗横幅 ================= -->
+<section id="banner" data-page-node-id="Dw1RaGyAIumqf2X4aLPlGV">
+  <h2 data-page-node-id="YMwGBBt9kfNkoXnbBqkapM">悬浮窗横幅 · 全状态</h2>
+  <p class="sub" data-page-node-id="IgENQJ2f8DYvqGh3rgeuuE">棋盘格背景模拟多邻国对局画面。横幅 92% 不透明 + 20dp 圆角 + 描边；
+     狂暴红框 / 远程绿框为既有契约（远程优先）。标题前缀与「走棋/自动」文案一字不改。</p>
+  <div class="bannerzone" data-page-node-id="0Oz8PgfUVnipR3tRpEjE0Z">
+    <div class="bgrid" id="bgrid" data-page-node-id="nU1hGoaaagu8KjU75gFxH1"></div>
+  </div>
+  <div class="capline" data-page-node-id="1KPHsA9nTELDhwcBMSQ9tQ">左下角为实时循环演示 · 拖拽位置记忆与点击契约保持不变</div>
+  <div style="margin-top:18px" data-page-node-id="jU6vGnSCw5FRv6fUkdpevh">
+    <div class="lbl" style="font-size:11px;color:var(--t3);font-family:var(--mono);margin-bottom:7px" data-page-node-id="UgjUC28QpHIhgBEZRgh4oL">LIVE · 状态循环演示（对局一分钟缩影）</div>
+    <span id="live" data-page-node-id="0HSXmo1ePjQNFcER2MYuRm"></span>
+  </div>
+</section>
+
+<!-- ================= ④ 宽屏适配 ================= -->
+<section id="wide" data-page-node-id="QzGxTsNDDeNMqBKw1ecGnc">
+  <h2 data-page-node-id="raP9zVibPtvGr7KhVvhiz7">宽屏与响应式</h2>
+  <p class="sub" data-page-node-id="R0QdTATf7hPbiFE6XFEL3u">内容列最大宽度 560dp 居中；手机竖屏占满，横屏/平板不拉伸。悬浮窗最大宽度 = 屏宽 − 32dp。</p>
+  <div class="wideframe" data-page-node-id="4LWtR5ww7xIQAvfJZL97Cp"><div class="wideinner" data-page-node-id="Ubar6Qi9GMRhwU0xOfBd12">
+    <div class="card" style="margin-bottom:0" data-page-node-id="ra0Q4g6OKfVGogl8iFiBC4">
+      <div class="staterow" data-page-node-id="rM81F4YcZtO3gQVdBK5bd8"><div class="dot" style="background:var(--win)" data-page-node-id="XzPDUrE3mRgUf859HOaMok"></div>
+        <div class="statelabel" data-page-node-id="15OvGld9Sv4t1qLDjz99X9">运行中</div><div class="modebadge remote" data-page-node-id="O5igPDQH6G4JCEdfJposRH">算力</div></div>
+      <div class="heromid" data-page-node-id="5LF8lzvbzLRK7YA4TWvNsO"><div class="l" data-page-node-id="mJzl4RglIY2MsoRVJ2ZyUI">
+        <div class="cap" data-page-node-id="XCfZT4yxvx24XsYRi8Ojyh">最佳招法</div><div class="bestmove" data-page-node-id="qFm6PjrqWDucj5EJifKBMh">d1h5</div>
+        <div class="winline" style="color:var(--win)" data-page-node-id="VVKCtwN5NNi7MFcRez45Xm">我方胜率 71%</div>
+        <div class="winbar" data-page-node-id="ASF1TXshE7DORpkyYs0rUj"><i style="width:71%;background:var(--win)" data-page-node-id="i9J2pEE8wbEmfwsTyfYPFj"></i></div>
+        <div class="bestsub" data-page-node-id="4kMwnGqUW8lwkRmy9UcfB0">深度25 · 刚刚</div></div>
+        <div class="fenboard" data-fen="r1bqkbnr/pppp1ppp/2n5/4p2Q/4P3/5N2/PPPP1PPP/RNB1KB1R b KQkq - 0 3" data-page-node-id="HTYQD71oVZ7jf2LZwPKlpz"></div>
+      </div>
+    </div>
+  </div></div>
+  <div class="capline" data-page-node-id="gqzYU8Kc82doHl5W1Q0dHj">↑ 760px 宽容器内，内容列锁定 560px 居中（Kotlin 实现：FrameLayout 包裹 + min(屏宽, 560dp)）</div>
+</section>
+
+<!-- ================= ⑤ 组件规范 ================= -->
+<section id="components" data-page-node-id="BEGYw8PXss5KMdQbJb4gIk">
+  <h2 data-page-node-id="T9LEiBIhENOErD3J0fruDU">组件规范 · 状态全览</h2>
+  <p class="sub" data-page-node-id="u6BW1ELRWH4NgLDGhLuU0P">每个组件的标准 / 悬停 / 按压 / 禁用态；Kotlin 侧由 <code data-page-node-id="VsojFq2e2dMAcC6bU9j1il">UiKit.kt</code> 工厂函数统一产出。</p>
+  <div class="spec" data-page-node-id="Qz87yHmEphhcwpT2AoJRoP">
+    <div class="box" data-page-node-id="5XWzLfddwas9zKCAUW6g6D"><h4 data-page-node-id="BWaeZRJcBDeApGSnkXrEWJ">按钮</h4>
+      <div class="row" data-page-node-id="1H15BKpN9dSS4niLdSFU9U"><button class="btn primary" style="width:auto;padding:0 22px;height:44px" data-page-node-id="rQF5GX5CDbGUUIphptmRRd">启动引擎服务</button>
+      <button class="btn danger-o" style="width:auto;padding:0 22px;height:44px" data-page-node-id="lwrXb7Xg6xA4KEwf5mSdB5">停止引擎服务</button>
+      <button class="btn secondary" style="width:auto;padding:0 22px" data-page-node-id="ifArUQHijgEFuwEaG99qtz">打开多邻国</button></div>
+      <div class="row" data-page-node-id="APUiBEHgHPmZLfRFHu86r5"><button class="play" data-page-node-id="NupYWWYeaRlddUyYoUHM2f">走棋</button><button class="play" disabled data-page-node-id="9ULM6C2KQuVEqg3uLRfYW3">自动</button>
+      <span class="tokens-note" data-page-node-id="AzCDnQLfMU7u92P50CBdM0">悬浮窗 pill：启用金底 / 禁用 #2A3342</span></div></div>
+    <div class="box" data-page-node-id="Okh5UuCCIyQlDEWFgympjW"><h4 data-page-node-id="m8rRFGiBRQJhXabUXMwSMu">开关</h4>
+      <div class="row" data-page-node-id="DqvRMXmgMo1PInCuUKCsuE"><div class="sw2 on" data-page-node-id="UmwfV0vftnNjnMqYhBTUU9"></div><span class="tokens-note" data-page-node-id="o1ZtdO3swC28EYkK6OXanR">开启：金轨道+金拇指</span></div>
+      <div class="row" data-page-node-id="KtNRjpH75oZNKa54n5yz5g"><div class="sw2" data-page-node-id="jpWWwpOQWFrWYNjSJqenpN"></div><span class="tokens-note" data-page-node-id="RNOScYEFB0cyBOYA8BZmlr">关闭：#2A3342 轨道 + 灰拇指</span></div>
+      <div class="row" data-page-node-id="AycvYD73nl89FUrxQT65d3"><span class="tokens-note" data-page-node-id="b2i8NDksT6eLEe5hxKOIUi">风险开关开启时，说明文字转 <b style="color:var(--mid)" data-page-node-id="A5Lc9rb09A7V5hhVAlz1Mm">semantic/mid 警示色</b></span></div></div>
+    <div class="box" data-page-node-id="NRCRVyX0tGFL1OXCTVoqZ9"><h4 data-page-node-id="svAkwRbzM87MAj8Spd4Yzv">滑杆与数值 chip</h4>
+      <div class="sliderrow" data-slider data-min="100" data-max="3000" data-step="100" data-val="1500" data-unit="ms" data-page-node-id="Awz7JOWXxUYODg1iAqXR3i"><div class="lh" data-page-node-id="F826qolkJDFYeVM2bUB1p0">思考时间<span class="valchip" data-page-node-id="Yoalimfw1cWYd63U9062yR"></span></div><input type="range" data-page-node-id="KXfeYsx3SwKkGXhAH9VeuY"></div>
+      <div class="tokens-note" data-page-node-id="EpT25zIUo07db1dVEA0zlk">禁用（固定深度生效时）：整行 alpha 0.4</div></div>
+    <div class="box" data-page-node-id="FD4LNqKVEjfcQW97Lo3CJi"><h4 data-page-node-id="EU21135SiJXxb78Q8nbLmA">分段控件 / 角标 / 状态点</h4>
+      <div class="seg" style="max-width:280px" data-page-node-id="XMxW6zKeHvt9yWBV2Zkn9Y"><div data-page-node-id="nKht53AB0l1XdEzV5D2t6F">本地</div><div class="on" data-page-node-id="OQ6X8w2W6Sfr1bzcKfgjCc">自动</div><div data-page-node-id="XHXPmAmt7taFsDrFxqtRad">远程电脑</div></div>
+      <div class="row" style="margin-top:14px" data-page-node-id="fCFRo6tPoIso9GqypImyXA">
+        <span class="modebadge berserk" style="margin:0" data-page-node-id="yWL64K5fGx2bCMAYrZzG95">狂暴</span>
+        <span class="modebadge remote" style="margin:0" data-page-node-id="qQp0zcNwEUPIBPFOcOmVyy">算力</span>
+        <span class="verchip" data-page-node-id="fAjaoWahN72sGIqpBUHx9t">v0.3</span>
+        <span class="dot pulse" style="background:var(--mid)" data-page-node-id="M3IOr0bbApBCZFXgaz1CYt"></span>
+        <span class="dot" style="background:var(--win)" data-page-node-id="7CPlAhACxDkAE7XOIcC3ir"></span>
+        <span class="dot" style="background:var(--t3)" data-page-node-id="OQizC6suVIxlxvvI6Ru3VG"></span>
+      </div></div>
+  </div>
+</section>
+
+</div>
+
+<script>
+/* ---------- 色板 ---------- */
+const SW1=[["bg/base","#0B0F14"],["bg/surface","#131922"],["bg/elevated","#1B2431"],["bg/inset","#0A0E13"],
+["text/primary","#F2F5F9"],["text/secondary","#A6B0BE"],["text/tertiary","#6B7686"],
+["brand/gold","#F5B942"],["brand/gold-dim 16%","#29F5B942"],["on-gold","#1A1305"]];
+const SW2=[["semantic/win ≥60","#69F0AE"],["semantic/mid 40-60","#FFD740"],["semantic/lose <40","#FF8A65"],
+["mode/berserk","#FF5722"],["mode/remote","#00E676"],["danger","#FF5252"]];
+const mk=([n,c])=>{const d=document.createElement("div");d.className="sw";
+ d.innerHTML=`<div class="c" style="background:${c};${c==="#F2F5F9"?"":""}"></div><div class="n"><b>${n}</b><span>${c}</span></div>`;return d};
+SW1.forEach(s=>document.getElementById("sw1").appendChild(mk(s)));
+SW2.forEach(s=>document.getElementById("sw2").appendChild(mk(s)));
+
+/* ---------- 间距/圆角示意 ---------- */
+[4,8,12,16,20,24,32].forEach(v=>{const d=document.createElement("div");
+ d.style.cssText=`width:${v}px;height:${v}px;background:var(--gold-dim);border:1px solid var(--gold);border-radius:3px`;
+ d.title=v+"dp";document.getElementById("spaces").appendChild(d);});
+[[16,"卡片"],[12,"控件"],[8,"chip"],[20,"悬浮窗"]].forEach(([r,n])=>{const d=document.createElement("div");
+ d.style.cssText=`width:38px;height:38px;background:var(--bg-elevated);border:1px solid var(--line-strong);border-radius:${r}px`;
+ d.title=n+" "+r;document.getElementById("radii").appendChild(d);});
+
+/* ---------- FEN 小棋盘 ---------- */
+const GLYPH={K:"♚",Q:"♛",R:"♜",B:"♝",N:"♞",P:"♟",k:"♚",q:"♛",r:"♜",b:"♝",n:"♞",p:"♟"};
+function renderBoard(el,fen){
+  el.innerHTML="";
+  let rows; try{rows=(fen||"").split(" ")[0].split("/");if(rows.length!==8)throw 0}catch(e){rows=Array(8).fill("8")}
+  for(let r=0;r<8;r++){let c=0;
+    for(const ch of rows[r]){
+      if(/\d/.test(ch)){for(let i=0;i<+ch;i++){cell(el,r,c++);}}
+      else{const s=cell(el,r,c++);s.textContent=GLYPH[ch]||"";
+        s.style.color=ch===ch.toUpperCase()?"#FAFAFA":"#161616";
+        s.style.textShadow=ch===ch.toUpperCase()?"0 0 2px #0008":"0 0 2px #FFF6";}
+    }
+    while(c<8)cell(el,r,c++);
+  }
+  const stm=(fen||"").split(" ")[1];
+  const d=document.createElement("i");d.className="stm";
+  d.style.background=stm==="b"?"#161616":"#FAFAFA";
+  if(stm==="b")d.style.border="1px solid #FAFAFA";
+  el.appendChild(d);
+}
+function cell(el,r,c){const s=document.createElement("i");
+  s.style.background=(r+c)%2? "#5A6B8C":"#C7D2E8";el.appendChild(s);return s}
+document.querySelectorAll(".fenboard[data-fen]").forEach(el=>renderBoard(el,el.dataset.fen));
+
+/* ---------- 折叠分组 ---------- */
+document.querySelectorAll("[data-sect] [data-head]").forEach(h=>{
+  h.addEventListener("click",()=>h.closest(".sect").classList.toggle("closed"));
+});
+
+/* ---------- 开关 ---------- */
+function bindSwitch(id,on,cb){const el=document.getElementById(id);if(!el)return;
+  const dot=el.querySelector(".sw2");const set=v=>{dot.classList.toggle("on",v);el.dataset.on=v;cb&&cb(v)};
+  el.addEventListener("click",()=>set(el.dataset.on!=="1"));set(on);}
+bindSwitch("sw-ponder",false);
+bindSwitch("sw-berserk",false);
+bindSwitch("sw-auto",false,v=>{
+  document.getElementById("sw-auto").classList.toggle("on-risk",v);
+});
+
+/* ---------- 滑杆 ---------- */
+document.querySelectorAll("[data-slider]").forEach(row=>{
+  const inp=row.querySelector("input"),chip=row.querySelector(".valchip");
+  const min=+row.dataset.min,max=+row.dataset.max,step=+row.dataset.step,unit=row.dataset.unit||"";
+  inp.min=min;inp.max=max;inp.step=step;inp.value=row.dataset.val;
+  const fmt=v=>row.dataset.fmt==="depth"?(+v===0?"关":v+" 层"):v+unit;
+  const paint=()=>{chip.textContent=fmt(inp.value);
+    inp.style.setProperty("--p",((inp.value-min)/(max-min)*100)+"%")};
+  inp.addEventListener("input",paint);paint();
+});
+
+/* ---------- 分段控件 ---------- */
+document.querySelectorAll(".seg").forEach(seg=>{
+  seg.querySelectorAll("div").forEach(d=>d.addEventListener("click",()=>{
+    seg.querySelectorAll("div").forEach(x=>x.classList.remove("on"));d.classList.add("on");
+  }));
+});
+
+/* ---------- 事件日志 ---------- */
+const LOG=["12:01:02 引擎服务启动","12:01:03 NNUE 已加载 nn-1a298aa575a0","12:01:19 Hook 已连接（socket 在线）",
+"12:02:55 新开局，我方执白","12:03:40 局面 e2e4 已上报","12:03:41 最佳招法 e2e4（ponder d7d5）",
+"12:03:41 自动走棋 e2e4（450ms）","12:04:02 ponder 命中","12:04:02 最佳招法 d1h5",
+"12:04:22 局面停滞标注：对局 45 秒无新局面"];
+document.getElementById("term").innerHTML=LOG.map(l=>{
+  const i=l.indexOf(" ");return `<b>${l.slice(0,i)}</b>${l.slice(i)}`}).join("<br>");
+
+/* ---------- 主界面状态预设 ---------- */
+const PRESETS={
+  stopped:{label:"已停止",dot:"var(--t3)",pulse:0,state:"已停止",badge:null,cap:"等待启动",move:"——",moveColor:"var(--t3)",
+    win:"启动引擎服务后开始分析",winColor:"var(--t3)",bar:0,barColor:"var(--t3)",sub:"",fen:"8/8/8/8/8/8/8/8 w - - 0 1",
+    toggle:["启动引擎服务","primary"],
+    kv:[["Hook 连接","未连接（LSPosed 模块未上报局面）",""],["NNUE","未加载",""],["引擎","已停止 · 普通 · 4线 · 128MB",""],
+        ["算力后端","本地",""],["当前局面","—","ellip"],["思考设置","700ms · 深度关",""],["自动走棋","关",""],["极限思考","关",""],["心跳","—",""]]},
+  best:{label:"运行中 · 优势推荐",dot:"var(--win)",pulse:0,state:"运行中",badge:null,cap:"最佳招法",move:"e2e4",moveColor:"var(--t1)",
+    win:"我方胜率 62%",winColor:"var(--win)",bar:62,barColor:"var(--win)",sub:"深度22 · 1 秒前",fen:"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    toggle:["停止引擎服务","danger-o"],
+    kv:[["Hook 连接","已连接（3 秒前收到局面）","ok"],["NNUE","embedded nn-1a298aa575a0",""],["引擎","狂暴关 · 4线 · 128MB · 深度22",""],
+        ["算力后端","本地",""],["当前局面","rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -","ellip mono"],["思考设置","700ms · 深度关",""],["自动走棋","关",""],["极限思考","待机",""],["心跳","2 秒前 · 轮到你走棋","ok"]]},
+  mid:{label:"均势 · 对手回合",dot:"var(--win)",pulse:0,state:"运行中",badge:null,cap:"上一步结论",move:"g8f6",moveColor:"var(--t1)",
+    win:"我方胜率 47%",winColor:"var(--mid)",bar:47,barColor:"var(--mid)",sub:"深度21 · 等待对手走棋…",fen:"r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 2 3",
+    toggle:["停止引擎服务","danger-o"],
+    kv:[["Hook 连接","已连接（1 秒前收到局面）","ok"],["NNUE","embedded nn-1a298aa575a0",""],["引擎","普通 · 4线 · 128MB · 深度21",""],
+        ["算力后端","本地",""],["当前局面","r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b","ellip mono"],["思考设置","700ms · 深度关",""],["自动走棋","关",""],["极限思考","ponder中（预测e7e5）",""],["心跳","刚刚",""]]},
+  auto:{label:"自动走棋中",dot:"var(--win)",pulse:1,state:"运行中",badge:null,cap:"自动走棋中",move:"d1h5",moveColor:"var(--gold)",
+    win:"我方胜率 71%",winColor:"var(--win)",bar:71,barColor:"var(--win)",sub:"深度24 · 刚刚 · 间隔450ms",fen:"r1bqkbnr/pppp1ppp/2n5/4p2Q/4P3/5N2/PPPP1PPP/RNB1KB1R b KQkq - 0 3",
+    toggle:["停止引擎服务","danger-o"],
+    kv:[["Hook 连接","已连接（刚刚收到局面）","ok"],["NNUE","embedded nn-1a298aa575a0",""],["引擎","普通 · 4线 · 128MB · 深度24",""],
+        ["算力后端","本地",""],["当前局面","r1bqkbnr/pppp1ppp/2n5/4p2Q/4P3/5N2/PPPP1PPP/RNB1KB1R b","ellip mono"],["思考设置","700ms · 深度关",""],["自动走棋","开（450ms）","warn"],["极限思考","待机",""],["心跳","刚刚 · 轮到你走棋","ok"]]},
+  berserk:{label:"狂暴 · 劣势",dot:"var(--win)",pulse:0,state:"运行中",badge:["狂暴","berserk"],cap:"最佳招法",move:"f8b4",moveColor:"var(--t1)",
+    win:"我方胜率 31% · 对方M2",winColor:"var(--lose)",bar:31,barColor:"var(--lose)",sub:"深度26 · 2 秒前",fen:"r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+    toggle:["停止引擎服务","danger-o"],
+    kv:[["Hook 连接","已连接（2 秒前收到局面）","ok"],["NNUE","embedded nn-1a298aa575a0",""],["引擎","狂暴 · 8线 · 512MB · 深度26",""],
+        ["算力后端","本地",""],["当前局面","r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w","ellip mono"],["思考设置","1500ms · 深度关",""],["自动走棋","关",""],["极限思考","关",""],["心跳","1 秒前 · 轮到你走棋","ok"],["err","分析深度异常：预算 1500ms 仅深度 1（已自愈）"]]},
+  remote:{label:"远程算力",dot:"var(--win)",pulse:0,state:"运行中",badge:["算力","remote"],cap:"最佳招法",move:"c7c5",moveColor:"var(--t1)",
+    win:"我方胜率 58%",winColor:"var(--mid)",bar:58,barColor:"var(--mid)",sub:"深度31 · 刚刚 · RTT 8ms",fen:"r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+    toggle:["停止引擎服务","danger-o"],
+    kv:[["Hook 连接","已连接（刚刚收到局面）","ok"],["NNUE","embedded nn-1a298aa575a0",""],["引擎","远程 · SF19 · 32线 · 深度31",""],
+        ["算力后端","远程电脑 192.168.1.230:41718","ok"],["当前局面","r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w","ellip mono"],["思考设置","远程 3000ms · 深度关",""],["自动走棋","关",""],["极限思考","待机",""],["心跳","刚刚",""]]}
+};
+function applyPreset(key){
+  const p=PRESETS[key];
+  const dot=document.getElementById("p-dot");
+  dot.style.background=p.dot;dot.classList.toggle("pulse",!!p.pulse);
+  document.getElementById("p-state").textContent=p.state;
+  const badge=document.getElementById("p-badge");
+  if(p.badge){badge.style.display="";badge.textContent=p.badge[0];badge.className="modebadge "+p.badge[1]}
+  else badge.style.display="none";
+  document.getElementById("p-movecap").textContent=p.cap;
+  const mv=document.getElementById("p-move");mv.textContent=p.move;mv.style.color=p.moveColor;
+  const wn=document.getElementById("p-win");wn.textContent=p.win;wn.style.color=p.winColor;
+  const bar=document.getElementById("p-winbar");bar.style.width=p.bar+"%";bar.style.background=p.barColor;
+  document.getElementById("p-sub").textContent=p.sub;
+  renderBoard(document.getElementById("p-board"),p.fen);
+  const tg=document.getElementById("p-toggle");tg.textContent=p.toggle[0];tg.className="btn "+p.toggle[1];
+  document.getElementById("p-kv").innerHTML=p.kv.map(r=>{
+    if(r[0]==="err")return `<div class="kv err"><div class="k">最近错误</div><div class="v">${r[1]}</div></div>`;
+    const mono=r[2]&&r[2].includes("mono")?" mono":"";
+    const cls=r[2]?r[2].replace("mono","").trim():"";
+    return `<div class="kv"><div class="k">${r[0]}</div><div class="v ${cls}${mono}">${r[1]}</div></div>`;
+  }).join("");
+  document.querySelectorAll("#presets button").forEach(b=>b.classList.toggle("on",b.dataset.k===key));
+}
+const pb=document.getElementById("presets");
+Object.entries(PRESETS).forEach(([k,p])=>{const b=document.createElement("button");
+  b.textContent=p.label;b.dataset.k=k;b.onclick=()=>applyPreset(k);pb.appendChild(b);});
+applyPreset("best");
+
+/* ---------- 悬浮窗状态矩阵 ---------- */
+const B=(cls,inner,label)=>`<div class="bstate"><div class="lbl">${label}</div>
+  <span class="banner ${cls}">${inner}</span></div>`;
+const SPIN=`<svg class="spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#F5B942" stroke-width="3"
+  stroke-linecap="round" stroke-dasharray="42 14"/></svg>`;
+document.getElementById("bgrid").innerHTML=[
+  B("",`<span class="tx"><b>ChessPilot</b><span>等待对局…</span></span><button class="play" disabled>走棋</button>`,"待机 · showStatus"),
+  B("",`<span class="tx"><b>等待走棋中…</b><span>正在计算…</span></span><button class="play" disabled>走棋</button>`,"手动模式 · 计算中（副行复位灰，B1 纪律）"),
+  B("",`${SPIN}<span class="tx"><b>自动走棋中…</b><span>正在计算…</span></span><button class="play" disabled>自动</button>`,"自动模式 · 计算中（spinner 金色 270°）"),
+  B("",`<span class="tx"><b>推荐：e2e4</b><span class="g">深度22 · 我方胜率62%</span></span><button class="play">走棋</button>`,"推荐 · 优势（≥60 绿）"),
+  B("",`<span class="tx"><b>推荐：g8f6</b><span class="y">深度21 · 我方胜率47%</span></span><button class="play">走棋</button>`,"推荐 · 均势（40~60 黄）"),
+  B("",`<span class="tx"><b>推荐：f8b4</b><span class="r">深度26 · 我方胜率31%·对方M2</span></span><button class="play">走棋</button>`,"推荐 · 劣势（<40 红 / 杀棋标注）"),
+  B("",`${SPIN}<span class="tx"><b>自动走棋中：d1h5</b><span class="g">深度24 · 我方胜率71%</span></span><button class="play" disabled>自动</button>`,"自动走棋落子中"),
+  B("",`<span class="tx"><b>等待对手走棋…</b><span>深度21 · 我方胜率47%</span></span><button class="play" disabled>走棋</button>`,"对手回合（保留上步结论）"),
+  B("",`<span class="tx"><b>极限思考（预测e7e5）</b><span>等待对手走棋…</span></span><button class="play" disabled>走棋</button>`,"ponder 预测独占副行"),
+  B("",`<span class="tx"><b>升变请手动选皇后</b><span class="mono">e7e8q</span></span><button class="play" disabled>走棋</button>`,"求助态 · 标题直显（契约）"),
+  B("",`<span class="tx"><b>对局结束</b><span>被将死，对方M0</span></span><button class="play" disabled>走棋</button>`,"终局 · bestmove (none) 转换"),
+  B("",`<span class="tx"><b>局面停滞 · 2分无新局面</b><span>对局结束或已切后台？</span></span><button class="play" disabled>走棋</button>`,"停滞标注（可替换态）"),
+  B("berserk",`<span class="bbadge berserk">狂暴</span><span class="tx"><b>推荐：f8b4</b><span class="r">深度26 · 我方胜率31%</span></span><button class="play">走棋</button>`,"狂暴模式 · 红框 + 角标"),
+  B("remote",`<span class="bbadge remote">算力</span><span class="tx"><b>推荐：c7c5</b><span class="g">深度31 · 我方胜率68%</span></span><button class="play">走棋</button>`,"远程算力 · 绿框 + 角标（优先于狂暴）"),
+].join("");
+
+/* ---------- 实时循环演示 ---------- */
+const LIVE=[
+  ["",`<span class="tx"><b>等待走棋中…</b><span>正在计算…</span></span><button class="play" disabled>走棋</button>`],
+  ["",`<span class="tx"><b>推荐：e2e4</b><span class="g">深度22 · 我方胜率62%</span></span><button class="play">走棋</button>`],
+  ["",`<span class="tx"><b>等待对手走棋…</b><span>深度22 · 我方胜率62%</span></span><button class="play" disabled>走棋</button>`],
+  ["",`${SPIN}<span class="tx"><b>自动走棋中…</b><span>正在计算…</span></span><button class="play" disabled>自动</button>`],
+  ["",`${SPIN}<span class="tx"><b>自动走棋中：d1h5</b><span class="g">深度24 · 我方胜率71%</span></span><button class="play" disabled>自动</button>`],
+  ["remote",`<span class="bbadge remote">算力</span><span class="tx"><b>推荐：c7c5</b><span class="g">深度31 · 我方胜率68%</span></span><button class="play">走棋</button>`],
+];
+let li=0;const liveEl=document.getElementById("live");
+setInterval(()=>{const[cls,inner]=LIVE[li%LIVE.length];li++;
+  liveEl.innerHTML=`<span class="banner ${cls}" style="animation:fadein .18s ease-out">${inner}</span>`;
+},2200);
+const st=document.createElement("style");st.textContent="@keyframes fadein{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}";
+document.head.appendChild(st);
+liveEl.innerHTML=`<span class="banner">${LIVE[0][1]}</span>`;
+</script>
+</body>
+</html>

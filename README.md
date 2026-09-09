@@ -10,6 +10,17 @@ LSPosed Hook + Stockfish 伴侣 App：在多邻国国际象棋里实时分析局
 - **app**（伴侣 App `com.chessassist`）：跑 Stockfish 引擎（子进程，`libstockfish.so`，NNUE 烘进二进制）、回环 TCP 桥、悬浮窗（推荐/胜率/走棋按钮）、控制页。
 - **桥**：`127.0.0.1:41717` JSON 行协议（`position` / `bestmove` / `play` / `clear` / `help`）。ContentProvider 仅做 adb 诊断（Android 11+ 包可见性）。
 
+## 界面（v1.0 · 设计系统）
+
+深色优先 + 品牌金（取自黄色推荐箭头）；胜率绿黄红、狂暴红框、远程绿框为语义契约（唯一出处 `ChessMath`/`OverlayManager`）。
+
+- **控制页**：对局雷达卡（状态点脉冲 / 大招法 / 胜率条 / FEN 小棋盘）→ 连接与引擎 KV → 快捷操作（主按钮随状态换肤）→ 功能设置 → 高级设置（分段后端 + 数值滑杆）→ 事件终端；内容列 560dp 宽屏居中。
+- **悬浮窗**：92% 深底 20dp 圆角、金 spinner、pill 走棋按钮（启用金 / 禁用灰）、入场动画；狂暴红框 / 远程绿框角标全状态重绘。
+- 实现：纯 framework 无新依赖，令牌与组件工厂集中在 `app/src/main/java/com/chessassist/ui/`（`UiKit.kt` / `FenBoardView.kt`）。
+
+规范见 [`docs/design/DESIGN_SYSTEM.md`](docs/design/DESIGN_SYSTEM.md)（含不可破坏文本契约清单），
+交互原型浏览器直接打开 [`docs/design/prototype.html`](docs/design/prototype.html)。
+
 ## 构建（离线可用）
 
 ```powershell

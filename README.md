@@ -4,11 +4,18 @@ LSPosed Hook + Stockfish 伴侣 App：在多邻国国际象棋里实时分析局
 
 > ⚠️ 修改多邻国行为违反其 ToS，有封号风险。请用小号折腾。
 
-## 架构（三块）
+## 环境要求
+
+- 手机：已 root + LSPosed（Zygisk），多邻国 `6.85.7`（arm64），Android 14 实测；小号。
+- 电脑（仅远程算力，`pc/`）：Python 3.8+（标准库即可），与手机同一 WiFi。
+- 构建：Windows + 本仓自带 `gradle-dist/gradle-8.7`（`--offline`），JDK 17，`ANDROID_HOME` 指向 SDK（含 build-tools）。
+
+## 架构（四块）
 
 - **module**（LSPosed 模块，作用域 `com.duolingo`）：Hook 棋盘状态构造器拿 FEN/回合/颜色；Rive 棋盘控制器画箭头、模拟点按走子；回环 TCP 上报局面、接收招法。
 - **app**（伴侣 App `com.chessassist`）：跑 Stockfish 引擎（子进程，`libstockfish.so`，NNUE 烘进二进制）、回环 TCP 桥、悬浮窗（推荐/胜率/走棋按钮）、控制页。
-- **桥**：`127.0.0.1:41717` JSON 行协议（`position` / `bestmove` / `play` / `clear` / `help`）。ContentProvider 仅做 adb 诊断（Android 11+ 包可见性）。
+- **pc**（电脑算力端，同仓 `pc/`）：`pc_engine.py` TCP 服务（默认 `0.0.0.0:41718`）挂桌面 Stockfish 19；手机后端切自动/远程即用，断线秒切本地。双击 `start-pc-engine.bat` 启动，详见 [`pc/README.md`](pc/README.md)。
+- **桥**：手机内 `127.0.0.1:41717` JSON 行协议（`position` / `bestmove` / `play` / `clear` / `help`）；手机↔电脑 `41718` 同协议族。ContentProvider 仅做 adb 诊断（Android 11+ 包可见性）。
 
 ## 界面（v1.0 · 设计系统）
 
@@ -40,10 +47,14 @@ tools/fetch_stockfish.sh        # 需要 git + curl（Windows 下等价手动执
 1. LSPosed 启用本模块，作用域勾多邻国，重启手机。
 2. 伴侣 App 点启动引擎服务（悬浮窗授权按需给）。
 3. 控制页调思考时间/深度/狂暴模式；升变一律手动（求助直显悬浮窗标题）。
+4. 要电脑算力：电脑上双击 `pc/start-pc-engine.bat`，手机控制页后端切"自动"/"远程"并填电脑 IP。
+
+成品包见 GitHub Release（`app-release-test.apk` + `module-release-test.apk`，debug 签名，仅自用学习）。
 
 ## 仓库卫生
 
-`work/`、 dex/apks、`.cxx`、`build/`、`dist/`、`stockfish/` 源码网文件均不进库
+`work/`、 dex/apks、`.cxx`、`build/`、`dist/`、`stockfish/` 源码网文件、
+`pc/engine/`（电脑端自下载）、本地工具状态（`.freebuff/`、`.workbuddy/`）均不进库
 （见 `.gitignore`），全部可再生：APK 解包 → `remap.py` → 引擎 `fetch` → 构建签名。
 
 ## 许可证

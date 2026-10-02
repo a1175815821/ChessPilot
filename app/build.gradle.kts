@@ -12,7 +12,7 @@ android {
         minSdk = 27
         targetSdk = 34
         versionCode = 4
-        versionName = "1.0"
+        versionName = "0.4"
         ndk {
             // Stockfish builds for arm64 (NNUE needs NEON); armeabi-v7a optional but slow.
             abiFilters += listOf("arm64-v8a")

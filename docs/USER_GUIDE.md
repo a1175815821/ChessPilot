@@ -270,6 +270,10 @@ cl5.s() 画原生箭头 ◄── BridgeClient ◄──Socket── bestmove �
   桥单槽改 FIFO（上限 20，连续推送保序）；
   删 config 死分支（归因备注：命中路径本就无 clearponder，属通用保序修）。
   另：裸 `go ponder` 无限是 UCI 设计（见上），旧"SF 竞态"挂起=误诊无限+真抢行两件事，别混。
+- **v0.4（合仓 + 公开发布整饰，无功能改）**：
+  电脑算力端并入主仓 `pc/`（`pc_engine.py` + `start-pc-engine.bat` + 说明），
+  旧外部目录可删；`pc/engine/`（自下载）与本地工具状态进 `.gitignore`；
+  仓库 README 补环境要求/四块架构/成品包说明。版号 0.4。
 - **v0.3（远程算力后端 + 预测箭头 + UI）**：
   1. 远程算力：`EngineClient` 接口（本地/远端同契约），`RemoteEngineClient`
      经局域网连电脑（同仓 `pc/` 目录，桌面 SF19 16 线，800ms 25 层+）；

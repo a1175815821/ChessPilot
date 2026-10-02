@@ -17,6 +17,12 @@ app/src/main/cpp/stockfish/
 gradle-wrapper.zip
 # Signed test artifacts (reproducible via build + apksigner)
 dist/
+# PC backend runtime droppings (self-downloaded engine + pycache)
+pc/engine/
+pc/__pycache__/
+# Local tooling state / session journals (never publish)
+.freebuff/
+.workbuddy/
 # IDE droppings
 .idea/
 *.iml

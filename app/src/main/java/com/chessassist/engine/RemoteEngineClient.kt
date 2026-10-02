@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
 /**
- * PC remote engine over LAN TCP (see I:\chessai-pc\pc_engine.py).
+ * PC remote engine over LAN TCP (see pc/pc_engine.py in this repo).
  *
  * Mirrors [StockfishClient]'s stream discipline EXACTLY, because EngineLoop
  * depends on it: at most one reader at a time (analyse XOR ponder),

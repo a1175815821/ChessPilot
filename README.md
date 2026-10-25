@@ -1,63 +1,110 @@
-# ChessPilot · 多邻国国际象棋助手
+<div align="center">
 
-LSPosed Hook + Stockfish 伴侣 App：在多邻国国际象棋里实时分析局面、画箭头、自动走棋。
+# ♟️ ChessPilot · 多邻国国际象棋助手
 
-> ⚠️ 修改多邻国行为违反其 ToS，有封号风险。请用小号折腾。
+**在多邻国国际象棋里实时看胜率、画推荐箭头、自动走棋 —— 手机自带引擎，或连电脑算力**
 
-## 环境要求
+*LSPosed hook + Stockfish companion for Duolingo chess: live analysis,
+best-move arrows on the board, optional autoplay — on-device or PC-powered.*
 
-- 手机：已 root + LSPosed（Zygisk），多邻国 `6.85.7`（arm64），Android 14 实测；小号。
-- 电脑（仅远程算力，`pc/`）：Python 3.8+（标准库即可），与手机同一 WiFi。
-- 构建：Windows + 本仓自带 `gradle-dist/gradle-8.7`（`--offline`），JDK 17，`ANDROID_HOME` 指向 SDK（含 build-tools）。
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/tag/a1175815821/ChessPilot?label=release)](https://github.com/a1175815821/ChessPilot/releases)
+[![Platform](https://img.shields.io/badge/Android%2014%20%7C%20LSPosed%20%7C%20arm64-blueviolet)](#-快速上手3-分钟)
+[![Stars](https://img.shields.io/github/stars/a1175815821/ChessPilot?style=social)](https://github.com/a1175815821/ChessPilot/stargazers)
 
-## 架构（四块）
+</div>
 
-- **module**（LSPosed 模块，作用域 `com.duolingo`）：Hook 棋盘状态构造器拿 FEN/回合/颜色；Rive 棋盘控制器画箭头、模拟点按走子；回环 TCP 上报局面、接收招法。
-- **app**（伴侣 App `com.chessassist`）：跑 Stockfish 引擎（子进程，`libstockfish.so`，NNUE 烘进二进制）、回环 TCP 桥、悬浮窗（推荐/胜率/走棋按钮）、控制页。
-- **pc**（电脑算力端，同仓 `pc/`）：`pc_engine.py` TCP 服务（默认 `0.0.0.0:41718`）挂桌面 Stockfish 19；手机后端切自动/远程即用，断线秒切本地。双击 `start-pc-engine.bat` 启动，详见 [`pc/README.md`](pc/README.md)。
-- **桥**：手机内 `127.0.0.1:41717` JSON 行协议（`position` / `bestmove` / `play` / `clear` / `help`）；手机↔电脑 `41718` 同协议族。ContentProvider 仅做 adb 诊断（Android 11+ 包可见性）。
+> ⚠️ **免责声明**：本项目会修改多邻国的运行行为，违反其服务条款，有封号风险。仅供学习研究，请用小号折腾。
 
-## 界面（v1.0 · 设计系统）
+---
 
-深色优先 + 品牌金（取自黄色推荐箭头）；胜率绿黄红、狂暴红框、远程绿框为语义契约（唯一出处 `ChessMath`/`OverlayManager`）。
+## ✨ 它能做什么
 
-- **控制页**：对局雷达卡（状态点脉冲 / 大招法 / 胜率条 / FEN 小棋盘）→ 连接与引擎 KV → 快捷操作（主按钮随状态换肤）→ 功能设置 → 高级设置（分段后端 + 数值滑杆）→ 事件终端；内容列 560dp 宽屏居中。
-- **悬浮窗**：92% 深底 20dp 圆角、金 spinner、pill 走棋按钮（启用金 / 禁用灰）、入场动画；狂暴红框 / 远程绿框角标全状态重绘。
-- 实现：纯 framework 无新依赖，令牌与组件工厂集中在 `app/src/main/java/com/chessassist/ui/`（`UiKit.kt` / `FenBoardView.kt`）。
+| | 功能 | 一句话说明 |
+|---|---|---|
+| 🎯 | **实时分析** | Hook 棋盘拿到局面（FEN），Stockfish 秒级给出最佳招法和胜率 |
+| ➡️ | **推荐箭头** | 直接画在多邻国棋盘上：金色＝推荐招法，红色＝预测对手的应招 |
+| 🤖 | **自动走棋** | 可选自动落子（带延迟可调），或悬浮窗按钮半自动确认 |
+| 🖥️ | **电脑算力** | 手机连电脑 Stockfish 19（NNUE），断线自动秒切回手机本地引擎 |
+| 🧠 | **极限思考** | ponder：对手思考时预判他的招法，命中则瞬时出招 |
+| 🔥 | **狂暴模式** | 线程拉满 ＋ 大内存，深算到底（悬浮窗红框角标） |
+| 📊 | **控制台** | 对局雷达卡、FEN 小棋盘、事件终端，每个状态都看得见 |
 
-规范见 [`docs/design/DESIGN_SYSTEM.md`](docs/design/DESIGN_SYSTEM.md)（含不可破坏文本契约清单），
-交互原型浏览器直接打开 [`docs/design/prototype.html`](docs/design/prototype.html)。
+<p align="center">
+  <img src="docs/img/console-running.jpg" alt="控制页：对局雷达卡 ＋ 悬浮窗走棋胶囊" width="260" />
+  <img src="docs/img/settings.jpg" alt="功能设置与高级设置（远程算力）" width="260" />
+  <img src="docs/img/console-stopped.jpg" alt="控制页：一键启停" width="260" />
+</p>
 
-## 构建（离线可用）
 
-```powershell
-# 1. 取引擎源码+网（SF19，网名即哈希验货）
-tools/fetch_stockfish.sh        # 需要 git + curl（Windows 下等价手动执行）
-# 2. 构建（自带 gradle-dist/gradle-8.7，offline）
-.gradle-dist\gradle-8.7\bin\gradle.bat -p . :app:assembleRelease :module:assembleRelease --offline
-# 3. 签名（本地 debug.keystore）→ dist/
+## 🚀 快速上手（3 分钟）
+
+前提：手机已 root 并装好 **LSPosed（Zygisk）**，多邻国版本 `6.85.7`（arm64）。
+
+1. 到 [Releases](https://github.com/a1175815821/ChessPilot/releases) 下载并安装两个包：
+   `module-release-test.apk`（LSPosed 模块）＋ `app-release-test.apk`（伴侣 App）
+2. LSPosed 里启用模块，作用域勾选**多邻国**，重启手机
+3. 打开伴侣 App，点一次「启动引擎服务」（通知权限给一下）→ 进多邻国开一局，金色箭头就出现了
+
+状态页怎么读、装完没反应怎么办 → [docs/USER_GUIDE.md](docs/USER_GUIDE.md)（含故障排查对照表）。
+
+## 🖥️ 想更强？连电脑算力（可选）
+
+手机芯片算不过桌面 CPU —— 让电脑替你算，手机只负责看和走：
+
+1. 电脑上双击 `pc/start-pc-engine.bat`（只需 Python 3.8+，Stockfish 自动下载）
+2. 手机控制页 → 高级设置 → 算力后端切「远程」，填电脑 IP
+
+连接断了自动切回手机本地引擎，一局都不耽误。细节见 [pc/README.md](pc/README.md)。
+
+## 🏗️ 它是怎么工作的
+
+```
+多邻国 App ──(LSPosed Hook：抓 FEN / Rive 画箭头 / 模拟点击)──▶ module
+                                                              │ 回环 TCP 127.0.0.1:41717
+                                                              ▼
+伴侣 App（com.chessassist）：Stockfish 子进程 ＋ 悬浮窗 ＋ 控制页
+                                                              │ 局域网 TCP :41718（可选）
+                                                              ▼
+                                            电脑 pc/pc_engine.py ＋ Stockfish 19
 ```
 
-详见 [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)（构建、排障、更新记录）与
-[`docs/REVERSE_ENGINEERING.md`](docs/REVERSE_ENGINEERING.md)（逆向笔记：坐标映射、
-`remap.json` 再生流程）。
+| 部分 | 是什么 |
+|---|---|
+| [module/](module) | LSPosed 模块（跑在多邻国进程内）：Hook 棋盘状态、驱动 Rive 控制器画箭头与走子、回环 TCP 通信 |
+| [app/](app) | 伴侣 App：Stockfish 引擎（NNUE 烘进 so）、TCP 桥（JSON 行协议）、悬浮窗、控制页 |
+| [pc/](pc) | 电脑算力端：纯 Python 标准库，零第三方依赖，引擎自动下载 |
+| [docs/](docs) | 使用手册、逆向笔记（坐标映射、`remap.json` 再生流程）、设计系统（含[浏览器原型](docs/design/prototype.html)） |
 
-## 使用
+> 为什么用 TCP 而不是 ContentProvider？Android 11+ 的包可见性限制让多邻国解析不了我们的组件，回环 socket 两边都不需要可见性 —— 踩坑实录在 [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md)。
 
-1. LSPosed 启用本模块，作用域勾多邻国，重启手机。
-2. 伴侣 App 点启动引擎服务（悬浮窗授权按需给）。
-3. 控制页调思考时间/深度/狂暴模式；升变一律手动（求助直显悬浮窗标题）。
-4. 要电脑算力：电脑上双击 `pc/start-pc-engine.bat`，手机控制页后端切"自动"/"远程"并填电脑 IP。
+## 🛠️ 自己构建
 
-成品包见 GitHub Release（`app-release-test.apk` + `module-release-test.apk`，debug 签名，仅自用学习）。
+```powershell
+# 1. 取 Stockfish 源码（SF19，网名即哈希验货）
+tools/fetch_stockfish.sh
 
-## 仓库卫生
+# 2. 离线构建（仓库自带 gradle-8.7，JDK 17，需 ANDROID_HOME 指向 SDK）
+.gradle-dist\gradle-8.7\bin\gradle.bat -p . :app:assembleRelease :module:assembleRelease --offline
 
-`work/`、 dex/apks、`.cxx`、`build/`、`dist/`、`stockfish/` 源码网文件、
-`pc/engine/`（电脑端自下载）、本地工具状态（`.freebuff/`、`.workbuddy/`）均不进库
-（见 `.gitignore`），全部可再生：APK 解包 → `remap.py` → 引擎 `fetch` → 构建签名。
+# 3. 本地 debug.keystore 签名 → dist/
+```
 
-## 许可证
+多邻国升级导致混淆名变了？不用慌：`tools/remap.py` 可以从新 APK 再生映射表，流程见逆向笔记。
 
-GPL-3.0（见 [`LICENSE`](LICENSE)）。注意：Stockfish 本体同样 GPL-3.0，
-分发二进制必须附带源码获取方式——本仓库即源码（引擎取自官方 tag + 构建脚本全开源）。
+仓库里不进 git 的东西（构建产物、Stockfish 源码、`dist/`、多邻国 APK）全部可按上述步骤再生。
+
+## ⭐ 支持一下
+
+如果这个项目帮到了你，或者 Hook 思路 / 引擎集成 / 抗混淆三层回退的设计对你有启发 ——
+**点个 Star** 让更多人看到它。每一步折腾都记录在[更新日志](docs/USER_GUIDE.md)里，欢迎 issue 交流。
+
+<div align="center">
+
+[![Star History Chart](https://api.star-history.com/svg?repos=a1175815821/ChessPilot&type=Date)](https://star-history.com/#a1175815821/ChessPilot&Date)
+
+</div>
+
+## 📄 许可证
+
+[GPL-3.0](LICENSE)。Stockfish 本体同为 GPL-3.0，分发二进制必须附带源码获取方式 —— 本仓库即源码（引擎取自官方 tag ＋ 构建脚本全开源）。

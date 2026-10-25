@@ -143,11 +143,16 @@ object RiveViewFinder {
             "${it.path}:${it.v.javaClass.name.substringAfterLast('.')}:${it.v.width}x${it.v.height}" +
                 ":shown=${it.v.isShown}:vis=${it.v.visibility}"
         }
-        lastChoice = top
         val win = ranked.firstOrNull()
         if (win != null) {
             BridgeAccess.riveView = win.v
-            MainHook.log("riveView pick: ${win.path} ${win.v.javaClass.name} ${win.v.width}x${win.v.height} [alt: $top]")
+            // Log only when the pick (or its shape) changes: the old unconditional
+            // log spammed the LSPosed log on every overlay repaint / tap.
+            if (top != lastChoice) {
+                lastChoice = top
+                MainHook.log("riveView pick: ${win.path} ${win.v.javaClass.name} " +
+                    "${win.v.width}x${win.v.height} [alt: $top]")
+            }
         }
         return win?.v
     }

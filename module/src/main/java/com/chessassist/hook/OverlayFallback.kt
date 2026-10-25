@@ -63,6 +63,26 @@ object OverlayFallback {
         }
     }
 
+    /**
+     * Drop the overlay window. Called from the Activity.onPause hook (see MainHook):
+     * TYPE_APPLICATION_OVERLAY is global, so without this a fallback arrow kept
+     * floating above the launcher and other apps. Idempotent — a later draw calls
+     * [ensure] again and re-adds a fresh window.
+     */
+    fun remove() {
+        val o = overlay
+        overlay = null
+        arrowSpec = null
+        added = false
+        if (o == null) return
+        mainHandler.post {
+            try {
+                (BridgeAccess.context?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
+                    ?.removeView(o)
+            } catch (_: Throwable) { }
+        }
+    }
+
     fun drawArrow(
         fromSquare: String, toSquare: String,
         color: Int = Color.argb(190, 255, 210, 0),

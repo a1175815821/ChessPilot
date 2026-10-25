@@ -143,29 +143,10 @@ class StateBridge {
 
     // ------------------------------------------------------------ extractors
 
-    /** ChessGameState.a (fen: ChessFen) → full FEN string. */
+    /** ChessGameState.a (fen: ChessFen) → full FEN string. Same extraction as [extractFenFrom]. */
     private fun extractFen(state: Any): String? {
         val fenObj = XposedHelpers.getObjectField(state, "a") ?: return null
-        // Preferred: the app's own full-FEN getter qh4.b() (returns e.g. "rnbq… w KQkq - 0 1").
-        try {
-            val full = XposedHelpers.callMethod(fenObj, "b") as? String
-            if (full != null && full.count { it == ' ' } >= 5) return full
-        } catch (_: Throwable) { }
-        // Fallback: assemble from the confirmed 9 fields.
-        val placement = XposedHelpers.getObjectField(fenObj, "a") as? String ?: return null
-        if (!placement.contains('/')) return null
-        val turn = colorSymbol(XposedHelpers.getObjectField(fenObj, "b") ?: return null)
-        val castling = buildString {
-            if (bool(fenObj, "c")) append('K')
-            if (bool(fenObj, "d")) append('Q')
-            if (bool(fenObj, "e")) append('k')
-            if (bool(fenObj, "f")) append('q')
-            if (isEmpty()) append('-')
-        }
-        val ep = (XposedHelpers.getObjectField(fenObj, "g") as? String).orEmpty().ifEmpty { "-" }
-        val half = XposedHelpers.getIntField(fenObj, "h")
-        val fullmove = XposedHelpers.getIntField(fenObj, "i")
-        return "$placement $turn $castling $ep $half $fullmove"
+        return extractFenFrom(fenObj)
     }
 
     private fun extractColor(state: Any, field: String): String? {

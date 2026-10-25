@@ -92,13 +92,37 @@ class MainHook : IXposedHookLoadPackage {
             hookBoardController(lpparam)
             hookRiveViews(lpparam)
             ViewModelFallback.hook(lpparam, remap, bridge)
-            CommandLoop.configure(remap, bridge)
+            hookActivityPause()
+            CommandLoop.configure(remap, bridge, arrowPainter)
         } catch (t: Throwable) {
             log("initAfterContext failed: $t")
         }
     }
 
     // ---------------------------------------------------------------- Rive views
+
+    /**
+     * TYPE_APPLICATION_OVERLAY is a GLOBAL window: a fallback arrow drawn in-game used
+     * to keep floating above the launcher / other apps until the process died. Removing
+     * it whenever any activity pauses restores sane lifetime; a later draw re-adds it
+     * ([OverlayFallback.ensure] is idempotent).
+     */
+    private fun hookActivityPause() {
+        try {
+            XposedHelpers.findAndHookMethod(
+                android.app.Activity::class.java,
+                "onPause",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        try { OverlayFallback.remove() } catch (_: Throwable) {}
+                    }
+                }
+            )
+            log("hooked Activity.onPause (overlay cleanup)")
+        } catch (t: Throwable) {
+            log("activity pause hook failed: $t")
+        }
+    }
 
     /**
      * Record every Rive board-view instance at construction. Kept (unobfuscated) names,

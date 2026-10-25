@@ -38,8 +38,11 @@ class AutoPlayer(private val bridge: StateBridge) {
         fun isLegalUci(u: String): Boolean = UCI_RE.matches(u)
     }
 
-    private var attemptKey: String? = null
-    private var attempts = 0
+    // Cross-thread budget: performMove (bridge reader thread) checks/resets, while
+    // tapMove and the applied-check (main thread) increment/read. The old plain Int
+    // had no visibility guarantees — the budget could silently overspend or underspend.
+    @Volatile private var attemptKey: String? = null
+    private val attempts = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
      * Generation of the currently-live tap chain. A new (fen,move) command supersedes
@@ -88,9 +91,9 @@ class AutoPlayer(private val bridge: StateBridge) {
         val key = "${cmdFen ?: "?"}|$uci"
         if (attemptKey != key) {
             attemptKey = key
-            attempts = 0
+            attempts.set(0)
         }
-        if (attempts >= MAX_ATTEMPTS) {
+        if (attempts.get() >= MAX_ATTEMPTS) {
             MainHook.log("autoplay: attempt budget spent for $uci, staying quiet")
             return
         }
@@ -136,7 +139,7 @@ class AutoPlayer(private val bridge: StateBridge) {
         val from = uci.substring(0, 2)
         val to = uci.substring(2, 4)
 
-        attempts++
+        attempts.incrementAndGet()
         // Human-like gap with ±20% jitter; Duolingo highlights the selected square here.
         val jittered = (gap * (0.8 + rand.nextDouble() * 0.4)).toLong()
         tapSquare(view, from, flipped)
@@ -153,7 +156,7 @@ class AutoPlayer(private val bridge: StateBridge) {
                 MainHook.log("autoplay release failed: $t")
             }
         }, jittered)
-        MainHook.log("autoplay performed: $uci (attempt $attempts/$MAX_ATTEMPTS, gap ${jittered}ms)")
+        MainHook.log("autoplay performed: $uci (attempt ${attempts.get()}/$MAX_ATTEMPTS, gap ${jittered}ms)")
     }
 
     /** True when this chain is no longer current: superseded, or board moved on. */
@@ -205,8 +208,8 @@ class AutoPlayer(private val bridge: StateBridge) {
                     finishFlight(key)
                     return@postDelayed
                 }
-                if (attempts < MAX_ATTEMPTS) {
-                    MainHook.log("autoplay: move not detected, retrying ($attempts/$MAX_ATTEMPTS): $uci")
+                if (attempts.get() < MAX_ATTEMPTS) {
+                    MainHook.log("autoplay: move not detected, retrying (${attempts.get()}/$MAX_ATTEMPTS): $uci")
                     tapMove(view, uci, flipped, (gap * 1.2).toLong(), startFen, cmdFen, key)
                     return@postDelayed
                 }

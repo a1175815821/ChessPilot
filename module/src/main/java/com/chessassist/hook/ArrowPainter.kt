@@ -39,6 +39,34 @@ class ArrowPainter(private val remap: Remap) {
 
     private var sMethod: java.lang.reflect.Method? = null
 
+    // Consecutive draw failures per arrow kind (main-thread confined). The confirm
+    // model retries until MAX_AGE — a broken board (stale remap, missing enum) used
+    // to burn a reflection scan + log + overlay repaint every 800 ms for 2 minutes.
+    // From the 3rd consecutive failure the next attempt is pushed 5 s out (capped
+    // at 15 s); a NEW command always resets the throttle (draw/drawPrediction set
+    // the attempt stamps to 0), so backoff never delays a fresh analysis.
+    private var bestFailStreak = 0
+    private var ponderFailStreak = 0
+
+    private fun noteDrawFailure(colorName: String) {
+        val isBest = colorName == "YELLOW"
+        val streak = if (isBest) ++bestFailStreak else ++ponderFailStreak
+        if (streak >= 3) {
+            val backoffMs = (5_000L * (streak - 2)).coerceAtMost(15_000L)
+            if (isBest) {
+                BridgePublisher.lastBestAttemptAt =
+                    System.currentTimeMillis() + backoffMs - BEST_RETRY_MS
+            } else {
+                BridgePublisher.lastPonderAttemptAt =
+                    System.currentTimeMillis() + backoffMs - PREDICT_RETRY_MS
+            }
+        }
+    }
+
+    private fun noteDrawSuccess(colorName: String) {
+        if (colorName == "YELLOW") bestFailStreak = 0 else ponderFailStreak = 0
+    }
+
     /** New state arrived (constructor hook): draw if we already have an analysis for it. */
     fun onGameState(state: Any) {
         val fen = BridgePublisher.lastAnalyzedFen ?: return
@@ -174,6 +202,7 @@ class ArrowPainter(private val remap: Remap) {
         }
         val controller = BridgeAccess.boardController ?: run {
             OverlayFallback.ensure()
+            noteDrawFailure(colorName)
             return
         }
         try {
@@ -181,9 +210,16 @@ class ArrowPainter(private val remap: Remap) {
                 MainHook.log("!! controller.s not resolved; overlay fallback")
                 OverlayFallback.ensure()
                 OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
+                noteDrawFailure(colorName)
                 return
             }
-            val loader = controller.javaClass.classLoader
+            val loader = controller.javaClass.classLoader ?: run {
+                MainHook.log("!! no class loader; overlay fallback")
+                OverlayFallback.ensure()
+                OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
+                noteDrawFailure(colorName)
+                return
+            }
             // resolveClass failure used to be a silent `?: return` (stale
             // remap.json after an app update) — log it loudly and degrade to
             // the overlay instead of arrows just never appearing.
@@ -191,14 +227,28 @@ class ArrowPainter(private val remap: Remap) {
                 MainHook.log("!! square class not resolved (remap.json stale? regenerate with tools/remap.py)")
                 OverlayFallback.ensure()
                 OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
+                noteDrawFailure(colorName)
                 return
             }
-            val fromSq = makeSquare(squareClz, from) ?: return
-            val toSq = makeSquare(squareClz, to) ?: return
+            val fromSq = makeSquare(squareClz, from) ?: run {
+                MainHook.log("!! makeSquare failed for $from; overlay fallback")
+                OverlayFallback.ensure()
+                OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
+                noteDrawFailure(colorName)
+                return
+            }
+            val toSq = makeSquare(squareClz, to) ?: run {
+                MainHook.log("!! makeSquare failed for $to; overlay fallback")
+                OverlayFallback.ensure()
+                OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
+                noteDrawFailure(colorName)
+                return
+            }
             val solid = enumConstant(loader, "arrowType", "SOLID")
             val color = resolveArrowColor(loader, colorName)
             if (solid == null || color == null) {
                 MainHook.log("!! enum constants missing")
+                noteDrawFailure(colorName)
                 return
             }
             // Mirror Duolingo's own game-review flow (hq4.n): reset arrows first, then draw.
@@ -220,11 +270,13 @@ class ArrowPainter(private val remap: Remap) {
                 BridgePublisher.ponderConfirmedFen = fen
                 BridgePublisher.ponderConfirmedMove = uciMove
             }
+            noteDrawSuccess(colorName)
             MainHook.log("arrow drawn: $uciMove ($colorName, waited=${waitedMs}ms)")
         } catch (t: Throwable) {
             MainHook.log("arrow draw failed: $t")
             OverlayFallback.ensure()
             OverlayFallback.drawArrow(from, to, fallbackColor(colorName))
+            noteDrawFailure(colorName)
         }
     }
 
@@ -242,11 +294,21 @@ class ArrowPainter(private val remap: Remap) {
         }
     }
 
+    /** Cached zero-arg clear method — getMethods() used to rebuild the array on every call. */
+    @Volatile private var clearMethod: java.lang.reflect.Method? = null
+    @Volatile private var clearMethodFor: Class<*>? = null
+
     private fun clearNow(controller: Any) {
-        try {
-            controller.javaClass.methods
+        var m = clearMethod
+        if (m == null || clearMethodFor !== controller.javaClass) {
+            m = controller.javaClass.methods
                 .firstOrNull { it.name == "r" && it.parameterCount == 0 }
-                ?.invoke(controller)
+            clearMethod = m
+            clearMethodFor = controller.javaClass
+        }
+        if (m == null) return
+        try {
+            m.invoke(controller)
         } catch (t: Throwable) {
             MainHook.log("clear failed: $t")
         }
@@ -256,9 +318,10 @@ class ArrowPainter(private val remap: Remap) {
 
     private fun resolveDrawMethod(controller: Any): java.lang.reflect.Method? {
         sMethod?.let { return it }
-        val typeClz = remap.resolveClass(controller.javaClass.classLoader, "arrowType") ?: return null
-        val colorClz = remap.resolveClass(controller.javaClass.classLoader, "arrowColor") ?: return null
-        val sqClz = remap.resolveClass(controller.javaClass.classLoader, "square") ?: return null
+        val loader = controller.javaClass.classLoader ?: return null
+        val typeClz = remap.resolveClass(loader, "arrowType") ?: return null
+        val colorClz = remap.resolveClass(loader, "arrowColor") ?: return null
+        val sqClz = remap.resolveClass(loader, "square") ?: return null
         val m = controller.javaClass.declaredMethods.firstOrNull {
             it.parameterTypes.size == 6 &&
                 it.parameterTypes[0] == sqClz &&

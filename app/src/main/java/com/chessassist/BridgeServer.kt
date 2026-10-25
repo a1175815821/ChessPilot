@@ -233,12 +233,18 @@ object BridgeServer {
         var out: OutputStream? = null
         clients.add(sock)
         try {
+            // Bounded reads: without SO_TIMEOUT a hook that dies without FIN (frozen
+            // process) parks this reader forever. On timeout we just re-check the
+            // loop condition — an idle-but-healthy hook is normal between moves.
+            try { sock.soTimeout = 30_000 } catch (_: Throwable) {}
             out = sock.getOutputStream()
             hookOutputs.add(out)
             val reader = BufferedReader(InputStreamReader(sock.getInputStream(), Charsets.UTF_8))
             while (running.get()) {
                 val line = try {
                     reader.readLine()
+                } catch (_: java.net.SocketTimeoutException) {
+                    continue
                 } catch (_: Throwable) {
                     break
                 } ?: break

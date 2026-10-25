@@ -12,14 +12,14 @@ object CommandLoop {
 
     private var painterInst: ArrowPainter? = null
     private var playerInst: AutoPlayer? = null
-    private var remapInst: Remap? = null
-    private var bridgeInst: StateBridge? = null
 
-    /** Call once from MainHook after remap+bridge exist; starts the bridge client. */
+    /** Call once from MainHook after remap+bridge+painter exist; starts the bridge client.
+     * The painter/player are the SINGLE shared instances (the old lazy second painter
+     * re-resolved sMethod and re-probed enum colors on its own). */
     @Synchronized
-    fun configure(remap: Remap, bridge: StateBridge) {
-        remapInst = remap
-        bridgeInst = bridge
+    fun configure(remap: Remap, bridge: StateBridge, painter: ArrowPainter) {
+        painterInst = painter
+        playerInst = AutoPlayer(bridge)
         if (started) return
         started = true
         BridgeClient.ensureStarted()
@@ -31,35 +31,39 @@ object CommandLoop {
             when (cmd["cmd"]) {
                 "bestmove" -> {
                     val uci = cmd["move"] ?: return
+                    // Shape gate BEFORE any state is touched: engine markers like
+                    // "(none)" (terminal position) used to be stored as the pending
+                    // bestmove and then re-validated (and silently dropped) on every
+                    // render for the next 120 s.
+                    if (!AutoPlayer.isLegalUci(uci)) {
+                        MainHook.log("bestmove rejected (not UCI): $uci")
+                        return
+                    }
                     // Fall back to the last published FEN for legacy commands that
                     // carry no "fen" field — and store the RESOLVED value: storing
                     // cmd["fen"] (null in that case) made the staleness guard in
                     // ArrowPainter reject every arrow.
                     val fen = cmd["fen"] ?: BridgePublisher.lastAnalyzedFen ?: return
-                    BridgePublisher.lastBestMove = uci
-                    BridgePublisher.lastBestMoveFen = fen
-                    BridgePublisher.lastBestMoveAt = System.currentTimeMillis()
-                    ensurePainter()?.draw(uci, fen)
+                    BridgePublisher.publishBest(uci, fen)
+                    painterInst?.draw(uci, fen)
                     // Single source of truth: the companion (BridgeSettings)
                     // decides autoplay and ships it as cmd["autoplay"].
                     if (cmd["autoplay"] == "1") {
-                        ensurePlayer()?.performMove(
+                        playerInst?.performMove(
                             uci, fen,
                             cmd["autoplayDelay"]?.toLongOrNull()
                         )
                     }
                 }
-                "clear" -> ensurePainter()?.clear()
+                "clear" -> painterInst?.clear()
                 // Ponder prediction (display-only gray arrow): never autoplayed,
                 // never touches bestmove state. Confirm-model repaints keep it on
                 // the board; any bestmove draw resets arrows first.
                 "ponder" -> {
                     val uci = cmd["move"] ?: return
                     val fen = cmd["fen"] ?: BridgePublisher.lastAnalyzedFen ?: return
-                    BridgePublisher.lastPonderMove = uci
-                    BridgePublisher.lastPonderFen = fen
-                    BridgePublisher.lastPonderAt = System.currentTimeMillis()
-                    ensurePainter()?.drawPrediction(uci, fen)
+                    BridgePublisher.publishPonder(uci, fen)
+                    painterInst?.drawPrediction(uci, fen)
                 }
                 // Retire a CONFIRMED prediction without touching a board the
                 // bestmove already claims (its yellow draw wiped ours anyway).
@@ -70,11 +74,9 @@ object CommandLoop {
                     if (pf != null && BridgePublisher.ponderConfirmedFen == pf &&
                         BridgePublisher.lastBestMoveFen != BridgePublisher.lastAnalyzedFen
                     ) {
-                        ensurePainter()?.clear()
+                        painterInst?.clear()
                     }
-                    BridgePublisher.lastPonderMove = null
-                    BridgePublisher.lastPonderFen = null
-                    BridgePublisher.lastPonderAt = 0
+                    BridgePublisher.clearPonder()
                     BridgePublisher.ponderConfirmedFen = null
                     BridgePublisher.ponderConfirmedMove = null
                 }
@@ -83,7 +85,7 @@ object CommandLoop {
                 "play" -> {
                     val uci = cmd["move"] ?: return
                     val fen = cmd["fen"] ?: return
-                    ensurePlayer()?.performMove(
+                    playerInst?.performMove(
                         uci, fen,
                         cmd["autoplayDelay"]?.toLongOrNull()
                     )
@@ -92,16 +94,5 @@ object CommandLoop {
         } catch (t: Throwable) {
             MainHook.log("command handling: $t")
         }
-    }
-
-    private fun ensurePainter(): ArrowPainter? {
-        if (painterInst == null && remapInst != null) painterInst = ArrowPainter(remapInst!!)
-        return painterInst
-    }
-
-    private fun ensurePlayer(): AutoPlayer? {
-        if (playerInst == null && bridgeInst != null)
-            playerInst = AutoPlayer(bridgeInst!!)
-        return playerInst
     }
 }

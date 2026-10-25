@@ -11,18 +11,45 @@ package com.chessassist.hook
  */
 object BridgePublisher {
 
-    @Volatile var lastBestMove: String? = null
-    @Volatile var lastBestMoveFen: String? = null
-    @Volatile var lastBestMoveAt: Long = 0
+    /** Immutable command triples: one @Volatile reference swap — no torn reads.
+     * The old three independent volatiles let the reader thread (CommandLoop)
+     * interleave with the main thread (ArrowPainter) into "old move + new fen",
+     * painting a stale arrow onto a fresh board. */
+    data class BestCmd(val uci: String?, val fen: String?, val at: Long)
+
     /**
      * Companion's predicted enemy reply (red arrow). Strictly display-only:
      * never feeds autoplay freshness, staleness gates, or the (fen,move) best
      * path. Repainted on renders while it matches the analysed FEN, cleared by
      * any bestmove draw (draw path resets arrows first) or "clearponder".
      */
-    @Volatile var lastPonderMove: String? = null
-    @Volatile var lastPonderFen: String? = null
-    @Volatile var lastPonderAt: Long = 0
+    data class PonderCmd(val uci: String?, val fen: String?, val at: Long)
+
+    @Volatile var bestCmd = BestCmd(null, null, 0)
+        private set
+    @Volatile var ponderCmd = PonderCmd(null, null, 0)
+        private set
+
+    /** Tearing-free granular accessors — existing readers keep their API. */
+    val lastBestMove: String? get() = bestCmd.uci
+    val lastBestMoveFen: String? get() = bestCmd.fen
+    val lastBestMoveAt: Long get() = bestCmd.at
+    val lastPonderMove: String? get() = ponderCmd.uci
+    val lastPonderFen: String? get() = ponderCmd.fen
+    val lastPonderAt: Long get() = ponderCmd.at
+
+    /** Writer entries — called from the socket reader thread (CommandLoop). */
+    fun publishBest(uci: String, fen: String) {
+        bestCmd = BestCmd(uci, fen, System.currentTimeMillis())
+    }
+
+    fun publishPonder(uci: String, fen: String) {
+        ponderCmd = PonderCmd(uci, fen, System.currentTimeMillis())
+    }
+
+    fun clearPonder() {
+        ponderCmd = PonderCmd(null, null, 0)
+    }
     /**
      * Prediction paint confirmation (self-healing repaint model): the one-shot
      * needDraw gate used to be consumed on command arrival, so an arrow wiped
@@ -52,12 +79,8 @@ object BridgePublisher {
     fun resetForNewGame() {
         lastAnalyzedFen = null
         lastPublishKey = null
-        lastBestMove = null
-        lastBestMoveFen = null
-        lastBestMoveAt = 0
-        lastPonderMove = null
-        lastPonderFen = null
-        lastPonderAt = 0
+        bestCmd = BestCmd(null, null, 0)
+        ponderCmd = PonderCmd(null, null, 0)
         ponderConfirmedFen = null
         ponderConfirmedMove = null
         lastPonderAttemptAt = 0

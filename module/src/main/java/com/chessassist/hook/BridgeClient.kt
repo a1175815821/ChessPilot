@@ -6,6 +6,8 @@ import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -19,20 +21,46 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Behavior: connect-retry loop with backoff; latest position is flushed on every
  * (re)connect so the engine catches up immediately. All I/O is wrapped — a dead
  * bridge never crashes the host game.
+ *
+ * THREADING: callers (including the HOST MAIN THREAD — StateBridge's render hook and
+ * ArrowPainter's ack) only build a small JSONObject and enqueue. Every byte of socket
+ * I/O happens on the dedicated [sendLoop] thread. The old design wrote on the caller
+ * thread: if the companion ever froze while holding the socket, the loopback buffer
+ * filled and `write` parked Duolingo's UI thread (ANR). Not connected ⇒ everything
+ * except [lastSnapshot] is dropped — positions go stale in seconds anyway, and the
+ * reconnect flush republishes the fresh one.
  */
 object BridgeClient {
 
     const val PORT = 41717
 
+    /** Queue cap: a stuck writer must not grow this without bound — oldest drops first. */
+    private const val MAX_QUEUE = 20
+
     private val running = AtomicBoolean(false)
     private var worker: Thread? = null
+    private var sender: Thread? = null
+
+    /**
+     * The whole write holds [sendLock], and every close path takes the same lock first:
+     * closing a socket mid-write (or racing two writers on fd teardown) segfaults ART's
+     * socketWrite0 instead of throwing IOException — an uncatchable host-process kill.
+     * Only the sender thread and the connect loop touch this — never a host caller.
+     */
     private val sendLock = Any()
-    private var out: OutputStream? = null
+    @Volatile private var out: OutputStream? = null
+
+    /** Socket writes are serialized here; offer() from any thread never blocks. */
+    private val queue = LinkedBlockingQueue<JSONObject>(MAX_QUEUE)
 
     @Volatile private var lastSnapshot: JSONObject? = null
 
     fun ensureStarted() {
         if (!running.compareAndSet(false, true)) return
+        sender = Thread(::sendLoop, "duo-chess-bridge-send").apply {
+            isDaemon = true
+            start()
+        }
         worker = Thread(::connectLoop, "duo-chess-bridge").apply {
             isDaemon = true
             start()
@@ -48,11 +76,11 @@ object BridgeClient {
             put("moves", moves.joinToString(" "))
         }
         lastSnapshot = obj
-        send(obj)
+        enqueue(obj)
     }
 
     fun sendAck(uci: String) {
-        send(JSONObject().apply {
+        enqueue(JSONObject().apply {
             put("t", "ack")
             put("drawn", uci)
         })
@@ -64,7 +92,7 @@ object BridgeClient {
      * "stuck" (taps didn't land — ask user to play the move).
      */
     fun sendHelp(code: String, uci: String) {
-        send(JSONObject().apply {
+        enqueue(JSONObject().apply {
             put("t", "help")
             put("code", code)
             put("move", uci)
@@ -72,33 +100,45 @@ object BridgeClient {
         MainHook.log("asked companion for manual help: $code $uci")
     }
 
-    /**
-     * The whole write holds [sendLock], and every close path takes the same lock first:
-     * closing a socket mid-write (or racing two writers on fd teardown) segfaults ART's
-     * socketWrite0 instead of throwing IOException — an uncatchable host-process kill.
-     */
-    private fun send(obj: JSONObject) {
-        val bytes = try {
-            (obj.toString() + "\n").toByteArray(Charsets.UTF_8)
-        } catch (_: Throwable) {
-            return
+    /** Enqueue only; never touches the socket, never blocks the caller. */
+    private fun enqueue(obj: JSONObject) {
+        if (out == null) return // not connected: caller state (lastSnapshot) survives
+        while (!queue.offer(obj)) {
+            queue.poll()
+            if (out == null) return
         }
-        var dead: OutputStream? = null
-        synchronized(sendLock) {
-            val o = out ?: return
-            try {
-                o.write(bytes)
-                o.flush()
+    }
+
+    /** The ONLY thread that performs socket writes. */
+    private fun sendLoop() {
+        while (running.get()) {
+            val obj = try {
+                queue.poll(200, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                continue
+            } ?: continue
+            val bytes = try {
+                (obj.toString() + "\n").toByteArray(Charsets.UTF_8)
             } catch (_: Throwable) {
-                if (out === o) {
-                    out = null
-                    dead = o
+                continue
+            }
+            var dead: OutputStream? = null
+            synchronized(sendLock) {
+                val o = out ?: return@synchronized
+                try {
+                    o.write(bytes)
+                    o.flush()
+                } catch (_: Throwable) {
+                    if (out === o) {
+                        out = null
+                        dead = o
+                    }
                 }
             }
-        }
-        // Close outside the lock (close itself never races a write now).
-        if (dead != null) {
-            try { dead.close() } catch (_: Throwable) {}
+            // Close outside the lock (close itself never races a write now).
+            if (dead != null) {
+                try { dead.close() } catch (_: Throwable) {}
+            }
         }
     }
 
@@ -114,7 +154,7 @@ object BridgeClient {
                 val o = sock.getOutputStream()
                 synchronized(sendLock) { out = o }
                 // Flush the latest position so analysis resumes immediately.
-                lastSnapshot?.let { send(it) }
+                lastSnapshot?.let { enqueue(it) }
                 backoff = 1000L
                 readLoop(sock)
             } catch (t: Throwable) {
@@ -122,7 +162,7 @@ object BridgeClient {
                 // taps "启动引擎服务". Throttled to one line per backoff step.
                 MainHook.log("bridge waiting for companion (${t.message?.take(60)})")
             } finally {
-                // Take sendLock so no send() is inside write() while we tear down.
+                // Take sendLock so no sender write() is inside the fd while we tear down.
                 val dead: OutputStream?
                 synchronized(sendLock) {
                     dead = out
@@ -132,6 +172,7 @@ object BridgeClient {
                 if (dead != null) {
                     try { dead.close() } catch (_: Throwable) {}
                 }
+                queue.clear()
             }
             try {
                 Thread.sleep(backoff)

@@ -23,17 +23,31 @@ class Remap private constructor(private var map: JSONObject) {
         return null
     }
 
-    fun resolveClass(loader: ClassLoader, key: String): Class<*>? {
-        val candidates = candidatesFor(key) ?: return null
-        for (i in 0 until candidates.length()) {
-            val name = candidates.optString(i)
-            if (name.isNullOrEmpty()) continue
-            val dotted = name.replace('/', '.')
-            try {
-                return XposedHelpers.findClass(dotted, loader)
-            } catch (_: Throwable) { /* try next candidate */ }
+    /**
+     * Resolution cache INCLUDING negative results: a stale key used to re-throw
+     * ClassNotFoundException per candidate on every draw/clear call (exception
+     * construction is not cheap). The baked table is immutable per process, so
+     * caching (even misses) is safe.
+     */
+    private val classCache = HashMap<String, Class<*>?>()
+
+    fun resolveClass(loader: ClassLoader, key: String): Class<*>? = synchronized(classCache) {
+        if (classCache.containsKey(key)) return classCache[key]
+        val candidates = candidatesFor(key)
+        var resolved: Class<*>? = null
+        if (candidates != null) {
+            for (i in 0 until candidates.length()) {
+                val name = candidates.optString(i)
+                if (name.isNullOrEmpty()) continue
+                val dotted = name.replace('/', '.')
+                try {
+                    resolved = XposedHelpers.findClass(dotted, loader)
+                    break
+                } catch (_: Throwable) { /* try next candidate */ }
+            }
         }
-        return null
+        classCache[key] = resolved
+        resolved
     }
 
     fun resolveClassOrNull(loader: ClassLoader, key: String): Class<*>? = resolveClass(loader, key)

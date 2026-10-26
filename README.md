@@ -48,6 +48,21 @@ best-move arrows on the board, optional autoplay — on-device or PC-powered.*
 
 状态页怎么读、装完没反应怎么办 → [docs/USER_GUIDE.md](docs/USER_GUIDE.md)（含故障排查对照表）。
 
+## 🧪 测试环境（版本必须一致）
+
+Hook 依赖多邻国内部的混淆名，`remap.json` 就是针对某一个具体构建生成/校验的 —— **版本对不上，Hook 基本必然失效**。本仓库所做的一切都基于下面这一组：
+
+| 项 | 值 |
+|---|---|
+| 应用 | 多邻国 `com.duolingo` |
+| 版本 | **6.85.7**（`versionCode 2396`） |
+| 架构 | arm64-v8a（`.apks` 含 3 个 split：base / arm64_v8a / xxhdpi） |
+| 测试用安装包 | `多邻国_6.85.7.apks`，SHA-256 `e282dc8ee71deaa8ac007f9d713b63f23bd732bee2f92c980f1aada8a47963ba` |
+| 映射表基准 | `module/src/main/assets/remap.json` → `"appVersion": "6.85.7"` |
+
+> **为什么仓库里没有这个安装包**：它是多邻国的版权作品，公开分发属于侵权；且该 `.apks` 有 108 MB，超过 GitHub 单文件 100 MB 的硬限制，推上去会被直接拒绝。
+> 复现同一测试环境请自行安装 **6.85.7**，先在系统设置里确认版本号，再看别的问题。
+
 ## 🖥️ 想更强？连电脑算力（可选）
 
 手机芯片算不过桌面 CPU —— 让电脑替你算，手机只负责看和走：

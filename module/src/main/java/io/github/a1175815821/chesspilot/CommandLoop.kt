@@ -1,4 +1,4 @@
-package com.chessassist.hook
+package io.github.a1175815821.chesspilot
 
 /**
  * Command dispatcher: the companion pushes bestmove/clear/ponder/clearponder/play

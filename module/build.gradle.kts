@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.chessassist.hook"
+    namespace = "io.github.a1175815821.chesspilot"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.chessassist.hook"
+        applicationId = "io.github.a1175815821.chesspilot"
         minSdk = 27
         targetSdk = 34
         versionCode = 5
@@ -40,7 +40,7 @@ dependencies {
 // stays "tools/remap.py -> rebuild module".
 val generateRemapTable by tasks.registering {
     val input = file("src/main/assets/remap.json")
-    val outDir = layout.buildDirectory.dir("generated/remap/com/chessassist/hook")
+    val outDir = layout.buildDirectory.dir("generated/remap/io/github/a1175815821/chesspilot")
     inputs.file(input)
     outputs.dir(outDir)
     doLast {
@@ -53,7 +53,7 @@ val generateRemapTable by tasks.registering {
         val dollar = '$'
         val escaped = json.replace("\\", "\\\\").replace("$", dollar + "{'$'}")
         val tq = "\"\"\""
-        val body = "package com.chessassist.hook\n\n" +
+        val body = "package io.github.a1175815821.chesspilot\n\n" +
             "/** Auto-generated from module/src/main/assets/remap.json - DO NOT EDIT. */\n" +
             "internal object RemapTable {\n" +
             "    const val APP_VERSION = \"" + version + "\"\n" +

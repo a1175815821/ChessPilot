@@ -1,4 +1,4 @@
-package com.chessassist.hook
+package io.github.a1175815821.chesspilot
 
 import android.view.View
 import java.lang.reflect.Modifier

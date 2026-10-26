@@ -1,4 +1,4 @@
-package com.chessassist.hook
+package io.github.a1175815821.chesspilot
 
 import org.json.JSONObject
 import java.io.BufferedReader

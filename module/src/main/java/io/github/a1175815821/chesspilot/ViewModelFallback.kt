@@ -1,4 +1,4 @@
-package com.chessassist.hook
+package io.github.a1175815821.chesspilot
 
 import android.os.Handler
 import android.os.HandlerThread

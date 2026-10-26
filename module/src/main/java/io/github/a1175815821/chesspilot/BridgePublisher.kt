@@ -1,4 +1,4 @@
-package com.chessassist.hook
+package io.github.a1175815821.chesspilot
 
 /**
  * Publishes snapshots/commands between the hook process and the companion app.

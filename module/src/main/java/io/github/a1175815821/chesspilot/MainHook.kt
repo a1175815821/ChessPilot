@@ -1,4 +1,4 @@
-package com.chessassist.hook
+package io.github.a1175815821.chesspilot
 
 import android.app.Application
 import de.robv.android.xposed.IXposedHookLoadPackage

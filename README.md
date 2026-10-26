@@ -39,7 +39,7 @@ best-move arrows on the board, optional autoplay — on-device or PC-powered.*
 
 ## 🚀 快速上手（3 分钟）
 
-前提：手机已 root 并装好 **LSPosed（Zygisk）**，多邻国版本 `6.85.7`（arm64）。
+前提：手机已 root 并装好 **LSPosed（Zygisk）**。实测通过的多邻国版本是 `6.85.7`（arm64），详见下方「测试环境」。
 
 1. 到 [Releases](https://github.com/a1175815821/ChessPilot/releases) 下载并安装两个包：
    `module-release-test.apk`（LSPosed 模块）＋ `app-release-test.apk`（伴侣 App）
@@ -48,9 +48,9 @@ best-move arrows on the board, optional autoplay — on-device or PC-powered.*
 
 状态页怎么读、装完没反应怎么办 → [docs/USER_GUIDE.md](docs/USER_GUIDE.md)（含故障排查对照表）。
 
-## 🧪 测试环境（版本必须一致）
+## 🧪 测试环境
 
-Hook 依赖多邻国内部的混淆名，`remap.json` 就是针对某一个具体构建生成/校验的 —— **版本对不上，Hook 基本必然失效**。本仓库所做的一切都基于下面这一组：
+Hook 依赖多邻国内部的混淆名，`remap.json` 是针对某一个具体构建生成的；表里每条都存了多个候选名、按顺序尝试，未混淆的名字也放行，所以换个版本未必就失效。但**实打实验证过的只有下面这一组**，遇到问题时以它为准：
 
 | 项 | 值 |
 |---|---|
@@ -61,7 +61,7 @@ Hook 依赖多邻国内部的混淆名，`remap.json` 就是针对某一个具�
 | 映射表基准 | `module/src/main/assets/remap.json` → `"appVersion": "6.85.7"` |
 
 > **为什么仓库里没有这个安装包**：它是多邻国的版权作品，公开分发属于侵权；且该 `.apks` 有 108 MB，超过 GitHub 单文件 100 MB 的硬限制，推上去会被直接拒绝。
-> 复现同一测试环境请自行安装 **6.85.7**，先在系统设置里确认版本号，再看别的问题。
+> 想复现同一环境，装 **6.85.7** 即可；提 issue 时带上你自己的版本号，方便判断是不是版本差异。
 
 ## 🖥️ 想更强？连电脑算力（可选）
 
